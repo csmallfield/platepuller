@@ -68,8 +68,8 @@ that has no `{clipName}` or `{shot}`), the run stops before encoding anything.
 | `prores4444` | .mov | ProRes 4444, 10-bit 4:4:4 |
 | `h264` | .mp4 | x264 CRF 16, 8-bit 4:2:0, AAC |
 | `h265_10bit` | .mp4 | x265 CRF 18, 10-bit 4:2:0, AAC |
-| `h265_preview` | .mp4 | HEVC Main, VBR 7 Mbps, full res, 8-bit, AAC 320k. Small files for Magnific and similar tools; matches Premiere's `h265_4k_preview` |
-| `h265_preview_nvenc` | .mp4 | Same as `h265_preview`, encoded on an NVIDIA GPU. Needs an NVIDIA driver new enough for the FFmpeg build (FFmpeg 9 needs 610+) |
+| `h265_preview` | .mp4 | HEVC Main, VBR 7 Mbps, full res, 8-bit, AAC 320k, encoded on an NVIDIA GPU (NVENC). Small files for Magnific and similar tools; matches Premiere's `h265_4k_preview`. Needs an NVIDIA driver new enough for the FFmpeg build (FFmpeg 9 needs 610+) |
+| `h265_preview_x265` | .mp4 | Same as `h265_preview`, encoded in software. Use it on machines without a suitable NVIDIA GPU (about 2–3× slower) |
 
 Add your own presets with `--presets my-presets.json`, using the same shape as
 [src/presets.json](src/presets.json).
