@@ -35,5 +35,21 @@
     "video": ["-c:v", "libx265", "-preset", "medium", "-crf", "18", "-tag:v", "hvc1"],
     "audio": ["-c:a", "aac", "-b:a", "320k"],
     "extra": ["-movflags", "+faststart"]
+  },
+  "h265_preview": {
+    "description": "H.265 VBR 7 Mbps full res, 8-bit 4:2:0 Main, AAC 320k (matches Premiere h265_4k_preview; small files for Magnific etc.)",
+    "ext": "mp4",
+    "pixFmt": "yuv420p",
+    "video": ["-c:v", "libx265", "-preset", "medium", "-profile:v", "main", "-b:v", "7M", "-maxrate", "10500k", "-bufsize", "14M", "-x265-params", "log-level=error", "-tag:v", "hvc1"],
+    "audio": ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"],
+    "extra": ["-movflags", "+faststart"]
+  },
+  "h265_preview_nvenc": {
+    "description": "As h265_preview, on the NVIDIA GPU (needs a driver new enough for this FFmpeg's NVENC)",
+    "ext": "mp4",
+    "pixFmt": "yuv420p",
+    "video": ["-c:v", "hevc_nvenc", "-preset", "p7", "-tune", "hq", "-profile:v", "main", "-tier", "main", "-rc", "vbr", "-multipass", "disabled", "-b:v", "7M", "-maxrate", "10500k", "-bufsize", "14M", "-tag:v", "hvc1"],
+    "audio": ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"],
+    "extra": ["-movflags", "+faststart"]
   }
 }
