@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4">
+	<sequence id="sequence-1">
+		<uuid>00000000-0000-0000-0000-000000000000</uuid>
+		<duration>60</duration>
+		<rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>
+		<name>edit_v1</name>
+		<media>
+			<video>
+				<track>
+					<clipitem id="clipitem-1">
+						<masterclipid>masterclip-1</masterclipid>
+						<name>1A</name>
+						<enabled>TRUE</enabled>
+						<duration>100</duration>
+						<rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>
+						<start>0</start><end>20</end><in>5</in><out>25</out>
+						<pproTicksIn>52920000000</pproTicksIn><pproTicksOut>264600000000</pproTicksOut>
+						<file id="file-1">
+							<name>TAKE_01.MOV</name>
+							<pathurl>file://localhost/D%3a/footage/day%201/TAKE_01.MOV</pathurl>
+							<rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>
+							<duration>100</duration>
+							<timecode><rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate><string>01:00:00:00</string><frame>86400</frame><displayformat>NDF</displayformat></timecode>
+							<media><video><samplecharacteristics><width>3840</width><height>2160</height></samplecharacteristics></video></media>
+						</file>
+						<link><linkclipref>clipitem-1</linkclipref><mediatype>video</mediatype></link>
+						<link><linkclipref>clipitem-4</linkclipref><mediatype>audio</mediatype></link>
+					</clipitem>
+					<clipitem id="clipitem-2">
+						<masterclipid>masterclip-1</masterclipid>
+						<name>1B</name>
+						<enabled>TRUE</enabled>
+						<duration>100</duration>
+						<rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>
+						<start>20</start><end>40</end><in>90</in><out>98</out>
+						<file id="file-1"/>
+					</clipitem>
+					<clipitem id="clipitem-3">
+						<masterclipid>masterclip-1</masterclipid>
+						<name>1C</name>
+						<enabled>FALSE</enabled>
+						<duration>100</duration>
+						<rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>
+						<start>40</start><end>60</end><in>40</in><out>60</out>
+						<file id="file-1"/>
+					</clipitem>
+				</track>
+			</video>
+			<audio>
+				<track>
+					<clipitem id="clipitem-4">
+						<masterclipid>masterclip-1</masterclipid>
+						<name>1A</name>
+						<duration>100</duration>
+						<rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>
+						<start>0</start><end>20</end><in>5</in><out>25</out>
+						<file id="file-1"/>
+						<link><linkclipref>clipitem-1</linkclipref><mediatype>video</mediatype></link>
+						<link><linkclipref>clipitem-4</linkclipref><mediatype>audio</mediatype></link>
+					</clipitem>
+				</track>
+			</audio>
+		</media>
+	</sequence>
+</xmeml>

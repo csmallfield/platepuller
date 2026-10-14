@@ -1,0 +1,20 @@
+{
+  "name": "clip-publish",
+  "version": "0.1.0",
+  "description": "Publish every clip of a Premiere XML (xmeml) edit as its own file with handles, then write a relinked XML.",
+  "type": "module",
+  "bin": {
+    "clip-publish": "src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "0.9.12"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
