@@ -9,7 +9,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(here, '..');
 const SCRIPT = path.join(here, 'exr_recompress.py');
 
-/** EXR compressions FFmpeg cannot write; frames are recompressed with OpenEXR afterwards. */
+/** EXR compressions FFmpeg cannot write; these sequences are written by OpenEXR instead. */
 export const OPENEXR_COMPRESSION = new Set(['dwaa', 'dwab', 'piz']);
 
 export function venvPython() {
@@ -33,12 +33,16 @@ export function openexrStatus() {
   return status;
 }
 
-/** Recompress every .exr in `dir`. onProgress(n) after each file. */
-export function recompressFolder(dir, compression, level, { onProgress, signal } = {}) {
+/**
+ * Encode an EXR sequence through OpenEXR: the Python helper runs ffmpeg (`spec.ffmpeg`, which
+ * must write raw planar float frames to stdout) and compresses the frames on several threads
+ * as they arrive. onProgress(n) after each written frame.
+ */
+export function streamExrSequence(spec, { onProgress, signal } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error('cancelled'));
-    const proc = spawn(venvPython(), [SCRIPT, compression, String(level), dir], { windowsHide: true });
-    // The script runs worker processes; on cancel stop the whole tree, not just the parent.
+    const proc = spawn(venvPython(), [SCRIPT, '--stream', JSON.stringify(spec)], { windowsHide: true });
+    // The helper runs ffmpeg as a child; on cancel stop the whole tree, not just the parent.
     const kill = () => {
       if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
       else proc.kill('SIGTERM');
@@ -66,7 +70,7 @@ export function recompressFolder(dir, compression, level, { onProgress, signal }
       if (signal?.aborted) reject(new Error('cancelled'));
       else if (failure) reject(failure);
       else if (code === 0) resolve();
-      else reject(new Error(`EXR recompression failed: ${stderr.trim().split('\n').pop()}`));
+      else reject(new Error(`EXR encoding failed: ${stderr.trim().split('\n').pop()}`));
     });
   });
 }

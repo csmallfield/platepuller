@@ -114,8 +114,10 @@ no audio or timecode, and they aren't relinked in a processed XML.
 prores4444.
 
 **EXR compression** (`--exr-compression`): FFmpeg writes ZIP, ZIPS and RLE directly. For PIZ,
-DWAA and DWAB, FFmpeg writes the frames uncompressed, then the OpenEXR library recompresses them
-in parallel, keeping every pixel and header attribute. DWAA and DWAB are lossy and much smaller.
+DWAA and DWAB, FFmpeg streams raw float frames through memory to the OpenEXR library, which
+compresses them on several threads. Nothing uncompressed touches the disk, which matters on hard
+drives: a 4K half-float frame is ~48 MB uncompressed and ~2 MB as DWAA. DWAA and DWAB are lossy
+and much smaller.
 On this project's footage, DWAA came out about 5.5× smaller than ZIP and within 0.2% (median) of
 it. `--dwa-level` sets the DWA level (default 45, higher is smaller). PIZ is lossless.
 

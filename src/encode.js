@@ -2,7 +2,11 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { framesToTimecode } from './xmeml.js';
-import { OPENEXR_COMPRESSION, recompressFolder } from './openexr.js';
+import os from 'node:os';
+import { OPENEXR_COMPRESSION, streamExrSequence } from './openexr.js';
+
+// Compression threads per OpenEXR sequence; several encodes may run at once.
+const EXR_THREADS = Math.max(2, Math.min(8, Math.floor(os.cpus().length / 3)));
 
 export const FRAME_MATCH = {
   nearest: 'each frame slot shows the sample whose timestamp is nearest (Premiere-style conform)',
@@ -118,19 +122,22 @@ export function imageFilters(job, color) {
 export function ffmpegArgs(job, { color = { mode: 'none' }, frameMatch = 'nearest' } = {}, outPath = job.outPath) {
   const { probe, range, preset, clip, output } = job;
   const sel = selectionFilters(job, frameMatch);
-  const input = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-y', '-copyts', '-ss', t6(sel.seek), '-i', clip.file.path];
+  const toPipe = outPath === 'pipe:1';
+  const input = [
+    '-hide_banner', '-nostdin', '-loglevel', 'error',
+    ...(toPipe ? [] : ['-progress', 'pipe:1']), // stdout carries the frames when piping
+    '-y', '-copyts', '-ss', t6(sel.seek), '-i', clip.file.path,
+  ];
   const vf = [...sel.video, ...imageFilters(job, color)].join(',');
 
   if (preset.kind === 'sequence') {
+    const head = [...input, '-map', '0:v:0', '-vf', vf, '-frames:v', String(range.frames), '-an', '-map_metadata', '-1'];
+    // raw planar float frames for OpenEXR to compress (DWAA/DWAB/PIZ)
+    if (toPipe) return [...head, '-f', 'rawvideo', 'pipe:1'];
     return [
-      ...input,
-      '-map', '0:v:0',
-      '-vf', vf,
-      '-frames:v', String(range.frames),
+      ...head,
       ...preset.video,
-      // DWAA/DWAB/PIZ are applied afterwards by OpenEXR, so ffmpeg writes those uncompressed
-      ...(preset.ext === 'exr' ? ['-compression', OPENEXR_COMPRESSION.has(output.exrCompression) ? 'none' : output.exrCompression ?? 'zip16'] : []),
-      '-an', '-map_metadata', '-1',
+      ...(preset.ext === 'exr' ? ['-compression', output.exrCompression ?? 'zip16'] : []),
       '-f', 'image2', '-start_number', String(job.seq.start),
       outPath,
     ];
@@ -229,17 +236,30 @@ async function encodeSequence(job, opts) {
   fs.mkdirSync(tmp, { recursive: true });
   // The image2 muxer expands % anywhere in the path, so literal % signs are doubled.
   const pattern = path.join(tmp, seq.name).replace(/%/g, '%%') + `.%0${seq.pad}d.${seq.ext}`;
-  const recompress = seq.ext === 'exr' && OPENEXR_COMPRESSION.has(job.output.exrCompression);
-  const frames = job.range.frames;
-  // with a recompression pass, ffmpeg is the first half of the progress bar
-  const share = recompress ? 0.5 : 1;
   try {
-    await runFfmpeg(ffmpegArgs(job, opts, pattern), { ...opts, onProgress: (n) => opts.onProgress?.(n * share) });
-    if (recompress) {
-      await recompressFolder(tmp, job.output.exrCompression, job.output.dwaLevel ?? 45, {
-        signal: opts.signal,
-        onProgress: (n) => opts.onProgress?.(frames * share + n * (1 - share)),
-      });
+    if (seq.ext === 'exr' && OPENEXR_COMPRESSION.has(job.output.exrCompression)) {
+      // ffmpeg -> pipe -> OpenEXR: no uncompressed frames ever touch the disk
+      await streamExrSequence(
+        {
+          ffmpeg: [opts.ffmpeg ?? 'ffmpeg', ...ffmpegArgs(job, opts, 'pipe:1')],
+          width: job.size.width,
+          height: job.size.height,
+          channels: job.output.alpha ? 4 : 3,
+          half: job.preset.video.includes('half'),
+          compression: job.output.exrCompression,
+          level: job.output.dwaLevel ?? 45,
+          dir: tmp,
+          name: seq.name,
+          ext: seq.ext,
+          start: seq.start,
+          pad: seq.pad,
+          frames: job.range.frames,
+          threads: EXR_THREADS,
+        },
+        opts,
+      );
+    } else {
+      await runFfmpeg(ffmpegArgs(job, opts, pattern), opts);
     }
     fs.mkdirSync(seq.dir, { recursive: true });
     for (const f of sequenceFrames(seq)) fs.rmSync(path.join(seq.dir, f)); // frames of an earlier version

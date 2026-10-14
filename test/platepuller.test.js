@@ -180,7 +180,7 @@ test('float outputs never go through swscale after linearising', () => {
   assert.equal(f[f.length - 1], 'format=gbrapf32le');
 });
 
-test('DWAA / DWAB / PIZ: ffmpeg writes uncompressed EXRs and OpenEXR recompresses them', () => {
+test('DWAA / DWAB / PIZ: ffmpeg streams raw float frames to OpenEXR, never to disk', () => {
   const job = {
     preset: BUILTIN_PRESETS.exr16,
     output: { exrCompression: 'dwaa', alpha: false },
@@ -190,8 +190,10 @@ test('DWAA / DWAB / PIZ: ffmpeg writes uncompressed EXRs and OpenEXR recompresse
     range: { start: 0, frames: 10 },
     seq: { start: 1001 },
   };
-  const args = ffmpegArgs(job, {}, 'out.%04d.exr');
-  assert.equal(args[args.indexOf('-compression') + 1], 'none');
+  const piped = ffmpegArgs(job, {}, 'pipe:1');
+  assert.deepEqual(piped.slice(-3), ['-f', 'rawvideo', 'pipe:1']);
+  assert.ok(!piped.includes('-progress'), 'stdout carries frames, not progress');
+  assert.ok(!piped.includes('exr'), 'no ffmpeg EXR encoder');
   job.output.exrCompression = 'zip1';
   const zip = ffmpegArgs(job, {}, 'out.%04d.exr');
   assert.equal(zip[zip.indexOf('-compression') + 1], 'zip1');
