@@ -193,11 +193,17 @@ test('one ffmpeg run per clip: decode once, split to every output', () => {
     { ...base, preset: BUILTIN_PRESETS.prores422hq, output: {}, size: { width: 32, height: 18 } },
   ];
   const args = clipArgs(jobs, ['PIPE', 'seq.%04d.exr', 'movie.mov']);
-  assert.equal(args.filter((a) => a === '-i').length, 1, 'the source is opened once');
+  const inputs = args.flatMap((a, i) => (a === '-i' ? [args.slice(Math.max(0, i - 3), i)] : []));
+  assert.equal(inputs.length, 2, 'video input + audio-only input');
+  assert.ok(!inputs[0].includes('-vn') && inputs[1].includes('-vn'), 'the second input skips the video data');
+  assert.ok(args.some((a) => a.startsWith('[1:a]')), 'audio comes from the audio-only input');
   const graphs = args.flatMap((a, i) => (args[i - 1] === '-filter_complex' ? [a] : []));
-  assert.equal(graphs.length, 4, 'one graph per output, plus audio');
-  assert.ok(graphs[3].includes('asplit=1[a2]'), 'audio only for the movie');
-  assert.match(graphs[2], /scale=32:18.*\[v2\]$/, 'each output has its own size');
+  assert.equal(graphs.length, 2, 'one video graph, one audio graph');
+  // frames are selected and trimmed once, before the split, so every branch ends together
+  assert.ok(graphs[0].includes('trim=end_frame=10,split=3[s0][s1][s2];'));
+  assert.match(graphs[0], /\[s2\][^;]*scale=32:18[^;]*\[v2\]/, 'each output has its own size');
+  assert.ok(graphs[1].startsWith('[1:a]') && graphs[1].includes('asplit=1[a2]'), 'audio only for the movie');
+  assert.ok(!args.includes('-frames:v'), 'length comes from the trim, not per-output limits');
   const after = (target) => args.slice(0, args.indexOf(target) + 1);
   // DWAA: raw float frames to the OpenEXR helper's pipe, no ffmpeg EXR encoder
   assert.deepEqual(args.slice(args.indexOf('PIPE') - 2, args.indexOf('PIPE') + 1), ['-f', 'rawvideo', 'PIPE']);

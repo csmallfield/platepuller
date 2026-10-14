@@ -45,6 +45,8 @@ export function selectionFilters(job, frameMatch) {
       'setpts=PTS-STARTPTS',
     ];
   }
+  // End each graph after exactly its frames, so no output waits on another to close it.
+  video.push(`trim=end_frame=${range.frames}`);
   const audio = [`atrim=start=${t6(t0)}:duration=${t6(range.frames / fps)}`, 'asetpts=PTS-STARTPTS'];
   return { seek, video, audio, rate };
 }
@@ -124,7 +126,7 @@ export const viaOpenEXR = (job) => job.preset.ext === 'exr' && OPENEXR_COMPRESSI
 /** Output options for one output of a clip's ffmpeg run; `i` is its index in the filtergraph. */
 function outputArgs(job, i, target, withAudio, rate) {
   const { preset, range, clip, output } = job;
-  const common = ['-map', `[v${i}]`, '-frames:v', String(range.frames), '-map_metadata', '-1'];
+  const common = ['-map', `[v${i}]`, '-map_metadata', '-1'];
   // raw planar float frames for OpenEXR to compress (DWAA/DWAB/PIZ)
   if (viaOpenEXR(job)) return [...common, '-f', 'rawvideo', target];
   if (preset.kind === 'sequence') {
@@ -160,14 +162,26 @@ function outputArgs(job, i, target, withAudio, rate) {
 export function clipArgs(jobs, targets, { colors = [], frameMatch = 'nearest' } = {}) {
   const { probe, clip } = jobs[0];
   const sel = selectionFilters(jobs[0], frameMatch);
-  // One filtergraph per output, all fed by the same decoded stream: ffmpeg runs each graph on
-  // its own thread, where a single graph with split would run every chain on one thread.
-  const graphs = jobs.map((j, i) => `[0:v]${[...sel.video, ...imageFilters(j, colors[i] ?? { mode: 'none' })].join(',')}[v${i}]`);
+  // One filtergraph: select (and trim) the frames once, then split to every output's chain,
+  // so all branches end on the same frame. (Separate graphs per output stalled ffmpeg 9
+  // when one graph finished while two or more others still needed frames.)
+  const n = jobs.length;
+  const graphs = [
+    [
+      `[0:v]${sel.video.join(',')},split=${n}${jobs.map((_, i) => `[s${i}]`).join('')}`,
+      ...jobs.map((j, i) => `[s${i}]${imageFilters(j, colors[i] ?? { mode: 'none' }).join(',')}[v${i}]`),
+    ].join(';'),
+  ];
   const audio = jobs.map((j, i) => (j.preset.kind === 'movie' && probe.audio ? i : -1)).filter((i) => i >= 0);
-  if (audio.length) graphs.push(`[0:a]${sel.audio.join(',')},asplit=${audio.length}${audio.map((i) => `[a${i}]`).join('')}`);
+  // Audio comes from a second, audio-only input of the same file (-vn: the demuxer skips the
+  // video data). Sharing one demuxer deadlocks: while a slow output (DWAA) holds the video
+  // back, audio runs ahead, reaches the end of the range first, and its unread packets then
+  // stall the demuxer before the video is done.
+  if (audio.length) graphs.push(`[1:a]${sel.audio.join(',')},asplit=${audio.length}${audio.map((i) => `[a${i}]`).join('')}`);
   return [
     '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1',
     '-y', '-copyts', '-ss', t6(sel.seek), '-i', clip.file.path,
+    ...(audio.length ? ['-ss', t6(sel.seek), '-vn', '-i', clip.file.path] : []),
     ...graphs.flatMap((g) => ['-filter_complex', g]),
     ...jobs.flatMap((j, i) => outputArgs(j, i, targets[i], audio.includes(i), sel.rate)),
   ];
