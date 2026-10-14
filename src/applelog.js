@@ -43,7 +43,7 @@ export function appleLogToRec709(rgb, exposure = 0.6) {
 
 export function buildCube(size = 33, exposure = 0.6) {
   const lines = [
-    'TITLE "Apple Log to Rec709 (clip-publish approximate)"',
+    'TITLE "Apple Log to Rec709 (platepuller approximate)"',
     `LUT_3D_SIZE ${size}`,
     'DOMAIN_MIN 0.0 0.0 0.0',
     'DOMAIN_MAX 1.0 1.0 1.0',
@@ -61,7 +61,7 @@ export function buildCube(size = 33, exposure = 0.6) {
 }
 
 export function writeBuiltinLut(exposure = 0.6) {
-  const file = path.join(os.tmpdir(), `clip-publish_applelog_rec709_e${exposure}.cube`);
+  const file = path.join(os.tmpdir(), `platepuller_applelog_rec709_e${exposure}.cube`);
   if (!fs.existsSync(file)) fs.writeFileSync(file, buildCube(33, exposure));
   return file;
 }

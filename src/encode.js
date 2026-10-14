@@ -90,7 +90,7 @@ export function ffmpegArgs(job, { lut, colorSpaceOut, frameMatch = 'nearest' }) 
     '-map_metadata', '-1',
     '-map_chapters', '-1',
     '-timecode', framesToTimecode(tcFrame, sel.rate, clip.file.dropFrame),
-    '-metadata', `comment=clip-publish source=${path.basename(clip.file.path)} frames=${range.start}-${range.end - 1} clip=${clip.name}`,
+    '-metadata', `comment=platepuller source=${path.basename(clip.file.path)} frames=${range.start}-${range.end - 1} clip=${clip.name}`,
     job.outPath,
   ];
 }

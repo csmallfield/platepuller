@@ -1,10 +1,10 @@
 {
-  "name": "clip-publish",
+  "name": "platepuller",
   "version": "0.1.0",
-  "description": "Publish every clip of a Premiere XML (xmeml) edit as its own file with handles, then write a relinked XML.",
+  "description": "Plate pulls from a Premiere XML edit: every clip as its own file with handles, plus a relinked XML.",
   "type": "module",
   "bin": {
-    "clip-publish": "src/cli.js"
+    "platepuller": "src/cli.js"
   },
   "scripts": {
     "test": "node --test \"test/*.test.js\""

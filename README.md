@@ -1,11 +1,12 @@
-# clip-publish
+# platepuller
 
-Publishes every video clip of a Premiere Pro edit as its own file, with handles, named by a
-template you control. It then writes a copy of the edit relinked to the new files.
+Plate pulls from a Premiere Pro edit. It publishes every video clip as its own file, with handles,
+named by a template you control, using FFmpeg. It then writes a copy of the edit relinked to the
+new files.
 
 ```
 Premiere  ──File › Export › Final Cut Pro XML──▶  edit.xml
-edit.xml  ──clip-publish──▶  publish/<editSource>/<clipName>/<clipName>_LOG_v001_prores422hq.mov  (one per clip)
+edit.xml  ──platepuller──▶  publish/<editSource>/<clipName>/<clipName>_LOG_v001_prores422hq.mov  (one per clip)
                              publish/<editSource>_processed.xml   (same edit, relinked)
                              publish/<editSource>_report.csv      (ranges, handles, warnings)
 ```
@@ -91,7 +92,7 @@ Add your own presets with `--presets my-presets.json`, using the same shape as
 - **Frame accuracy.** iPhone "24p" files aren't perfectly regular: some have a frame 1/600 s
   longer every 49 frames, which is really about 23.98 fps. Premiere conforms these to 24 fps by
   time, so frame N in the edit is the source frame nearest to N/24 s, not always the Nth frame in
-  the file. clip-publish matches frames the same way (`--frame-match nearest`). If a published clip
+  the file. platepuller matches frames the same way (`--frame-match nearest`). If a published clip
   is ever one frame off in Premiere, try `--frame-match index` or `covering`, and please report it.
 - **Timecode** on each output is the source timecode of its first frame (handle included).
 - **Audio** is the source audio for the same range: PCM in .mov, AAC in .mp4.

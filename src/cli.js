@@ -25,7 +25,7 @@ const DEFAULTS = {
   frameMatch: 'nearest',
 };
 
-const HELP = `clip-publish <edit.xml> [options]
+const HELP = `platepuller <edit.xml> [options]
 
 Publishes every video clip of a Premiere XML (Final Cut Pro 7 XML) edit as its own
 file with handles, then writes <editSource>_processed.xml relinked to the new files.
@@ -56,7 +56,7 @@ Options
   -h, --help
 
 Example
-  clip-publish edit.xml --version v002 --preset prores422hq --preset h264 \\
+  platepuller edit.xml --version v002 --preset prores422hq --preset h264 \\
     --convert applelog-rec709 --template "{editSource}/{clipName}/{clipName}_{colorSpace}_{version}_{preset}"
 `;
 
