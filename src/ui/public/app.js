@@ -1,7 +1,7 @@
 'use strict';
 
 const TOKEN = document.querySelector('meta[name="platepuller-token"]').content;
-const STORE = 'platepuller.settings.v1';
+const STORE = 'platepuller.settings.v2'; // v2: exposure is in stops (v1 stored the curve's 0.6 scale)
 const $ = (id) => document.getElementById(id);
 
 let meta;
@@ -40,7 +40,11 @@ function el(tag, attrs = {}, ...children) {
 
 function loadSaved() {
   try {
-    return JSON.parse(localStorage.getItem(STORE)) || null;
+    const saved = JSON.parse(localStorage.getItem(STORE));
+    if (saved) return saved;
+    const v1 = JSON.parse(localStorage.getItem('platepuller.settings.v1'));
+    if (v1?.outputs) for (const o of v1.outputs) o.exposure = 0;
+    return v1 || null;
   } catch {
     return null;
   }

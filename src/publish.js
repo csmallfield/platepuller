@@ -28,7 +28,7 @@ export const DEFAULTS = {
   frameMatch: 'nearest',
   existing: 'stop', // stop | overwrite | skip
   includeDisabled: false,
-  output: { preset: 'prores422hq', color: 'none', exposure: 0.6, lut: '', colorSpace: '' },
+  output: { preset: 'prores422hq', color: 'none', exposure: 0, lut: '', colorSpace: '' }, // exposure in stops
 };
 
 export function loadPresets(extraFile) {
@@ -45,7 +45,7 @@ export function normalizeOutput(raw, presets) {
   if (!COLOR_MODES[o.color]) errors.push(`Unknown colour mode "${o.color}"`);
   if (o.color === 'lut' && !o.lut) errors.push('Choose a LUT file');
   else if (o.color === 'lut' && !fs.existsSync(o.lut)) errors.push(`LUT not found: ${o.lut}`);
-  if (o.color === 'applelog-rec709' && !(o.exposure > 0)) errors.push('Exposure must be above 0');
+  if (o.color === 'applelog-rec709' && !(Math.abs(o.exposure) <= 6)) errors.push('Exposure must be between -6 and +6 stops');
   o.colorSpace = String(o.colorSpace ?? '').trim() || (o.color === 'none' ? 'LOG' : 'REC709');
   return { output: o, errors };
 }

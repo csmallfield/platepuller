@@ -28,20 +28,26 @@ const REC2020_TO_REC709 = [
   [-0.018151, -0.100579, 1.11873],
 ];
 
-function toneMap(x, exposure) {
-  const v = Math.max(0, x * exposure);
+// The Narkowicz curve expects scene-linear input pre-scaled by 0.6; with it, 18% grey
+// lands at ~44% display code value. That is the neutral point, i.e. 0 stops.
+const CURVE_INPUT_SCALE = 0.6;
+
+function toneMap(x) {
+  const v = Math.max(0, x * CURVE_INPUT_SCALE);
   return Math.min(1, (v * (2.51 * v + 0.03)) / (v * (2.43 * v + 0.59) + 0.14));
 }
 
-export function appleLogToRec709(rgb, exposure = 0.6) {
+/** `stops`: exposure adjustment in stops, 0 = neutral, +1 = twice as bright. */
+export function appleLogToRec709(rgb, stops = 0) {
+  const gain = 2 ** stops;
   const lin = rgb.map(appleLogToLinear);
   return REC2020_TO_REC709.map((row) => {
-    const v = row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2];
-    return toneMap(v, exposure) ** (1 / 2.4);
+    const v = (row[0] * lin[0] + row[1] * lin[1] + row[2] * lin[2]) * gain;
+    return toneMap(v) ** (1 / 2.4);
   });
 }
 
-export function buildCube(size = 33, exposure = 0.6) {
+export function buildCube(size = 33, stops = 0) {
   const lines = [
     'TITLE "Apple Log to Rec709 (platepuller approximate)"',
     `LUT_3D_SIZE ${size}`,
@@ -52,7 +58,7 @@ export function buildCube(size = 33, exposure = 0.6) {
   for (let bi = 0; bi < size; bi++) {
     for (let gi = 0; gi < size; gi++) {
       for (let ri = 0; ri < size; ri++) {
-        const out = appleLogToRec709([ri / n, gi / n, bi / n], exposure);
+        const out = appleLogToRec709([ri / n, gi / n, bi / n], stops);
         lines.push(out.map((v) => v.toFixed(6)).join(' '));
       }
     }
@@ -60,8 +66,8 @@ export function buildCube(size = 33, exposure = 0.6) {
   return lines.join('\n') + '\n';
 }
 
-export function writeBuiltinLut(exposure = 0.6) {
-  const file = path.join(os.tmpdir(), `platepuller_applelog_rec709_e${exposure}.cube`);
-  if (!fs.existsSync(file)) fs.writeFileSync(file, buildCube(33, exposure));
+export function writeBuiltinLut(stops = 0) {
+  const file = path.join(os.tmpdir(), `platepuller_applelog_rec709_${stops >= 0 ? '+' : ''}${stops}stops.cube`);
+  if (!fs.existsSync(file)) fs.writeFileSync(file, buildCube(33, stops));
   return file;
 }

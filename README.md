@@ -101,7 +101,8 @@ Add your own presets with `--presets my-presets.json`, using the same shape as
   *Apple Log to Rec.709* LUT from Apple's Log profile download.
 - `--convert applelog-rec709` uses a built-in technical transform: Apple Log decode → Rec.2020
   linear → Rec.709 gamut → filmic tone curve → gamma 2.4. It's handy for quick dailies but it is
-  **not** Apple's LUT. Use `--exposure` to adjust it (default `0.6`; higher is brighter).
+  **not** Apple's LUT. Use `--exposure` to adjust it, in stops: `0` (default) is neutral, with 18% grey landing at about 44%; `+1` is
+  one stop brighter.
 
 ## What it does with each clip
 

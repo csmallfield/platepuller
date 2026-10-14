@@ -23,7 +23,7 @@ Options
       --color-space <s>    {colorSpace} label (default: LOG, or REC709 when converting)
       --convert <name>     Built-in colour conversion: applelog-rec709
       --lut <file.cube>    Apply this 3D LUT (e.g. Apple's official Apple Log to Rec709 LUT)
-      --exposure <x>       Exposure for --convert applelog-rec709 (default: ${DEFAULTS.output.exposure})
+      --exposure <stops>   Exposure for --convert applelog-rec709, in stops (default: 0 = neutral)
       --frame-match <m>    How edit frames map to source samples: ${Object.keys(FRAME_MATCH).join(' | ')}
                            (default: nearest, which matches Premiere's time-based conform)
       --config <job.json>  Read options from a JSON file (CLI flags win)

@@ -10,7 +10,7 @@ import {
 import { renderTemplate, validateTemplate } from '../src/template.js';
 import { handleRange, buildJobs, findCollisions } from '../src/plan.js';
 import { framesAtRate } from '../src/probe.js';
-import { appleLogToLinear } from '../src/applelog.js';
+import { appleLogToLinear, appleLogToRec709 } from '../src/applelog.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = fs.readFileSync(path.join(here, 'fixture.xml'), 'utf8');
@@ -112,4 +112,10 @@ test('source length in frames follows Premiere (duration rounded to nearest fram
 test('Apple Log curve', () => {
   assert.ok(Math.abs(appleLogToLinear(0.4882) - 0.18) < 0.002, '18% grey sits near 0.488');
   assert.ok(appleLogToLinear(0) < 0);
+});
+
+test('Apple Log to Rec.709 exposure is in stops, 0 = neutral', () => {
+  const grey = (stops) => appleLogToRec709([0.4882, 0.4882, 0.4882], stops)[0];
+  assert.ok(Math.abs(grey(0) - 0.441) < 0.005, '18% grey lands near 44% at 0 stops');
+  assert.ok(grey(1) > grey(0) && grey(0) > grey(-1));
 });
