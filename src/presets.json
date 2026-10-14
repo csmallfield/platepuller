@@ -1,28 +1,37 @@
 {
   "prores422hq": {
     "description": "Apple ProRes 422 HQ, 10-bit 4:2:2, PCM audio",
+    "kind": "movie",
     "ext": "mov",
+    "space": "yuv",
     "pixFmt": "yuv422p10le",
     "video": ["-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0"],
     "audio": ["-c:a", "pcm_s16le"]
   },
   "prores422": {
     "description": "Apple ProRes 422, 10-bit 4:2:2, PCM audio",
+    "kind": "movie",
     "ext": "mov",
+    "space": "yuv",
     "pixFmt": "yuv422p10le",
     "video": ["-c:v", "prores_ks", "-profile:v", "2", "-vendor", "apl0"],
     "audio": ["-c:a", "pcm_s16le"]
   },
   "prores4444": {
-    "description": "Apple ProRes 4444, 10-bit 4:4:4, PCM audio",
+    "description": "Apple ProRes 4444, 10-bit 4:4:4, PCM audio (alpha optional)",
+    "kind": "movie",
     "ext": "mov",
+    "space": "yuv",
     "pixFmt": "yuv444p10le",
+    "alphaPixFmt": "yuva444p10le",
     "video": ["-c:v", "prores_ks", "-profile:v", "4", "-vendor", "apl0"],
     "audio": ["-c:a", "pcm_s16le"]
   },
   "h264": {
     "description": "H.264 high quality (CRF 16), 8-bit 4:2:0, AAC 320k",
+    "kind": "movie",
     "ext": "mp4",
+    "space": "yuv",
     "pixFmt": "yuv420p",
     "video": ["-c:v", "libx264", "-preset", "slow", "-crf", "16"],
     "audio": ["-c:a", "aac", "-b:a", "320k"],
@@ -30,15 +39,19 @@
   },
   "h265_10bit": {
     "description": "H.265 / HEVC (CRF 18), 10-bit 4:2:0, AAC 320k",
+    "kind": "movie",
     "ext": "mp4",
+    "space": "yuv",
     "pixFmt": "yuv420p10le",
     "video": ["-c:v", "libx265", "-preset", "medium", "-crf", "18", "-tag:v", "hvc1"],
     "audio": ["-c:a", "aac", "-b:a", "320k"],
     "extra": ["-movflags", "+faststart"]
   },
   "h265_preview": {
-    "description": "H.265 VBR 7 Mbps full res, 8-bit 4:2:0 Main, AAC 320k, NVIDIA NVENC (matches Premiere h265_4k_preview; small files for Magnific etc.)",
+    "description": "H.265 VBR 7 Mbps, 8-bit 4:2:0 Main, AAC 320k, NVIDIA NVENC (matches Premiere h265_4k_preview; small files for Magnific etc.)",
+    "kind": "movie",
     "ext": "mp4",
+    "space": "yuv",
     "pixFmt": "yuv420p",
     "video": ["-c:v", "hevc_nvenc", "-preset", "p7", "-tune", "hq", "-profile:v", "main", "-tier", "main", "-rc", "vbr", "-multipass", "disabled", "-b:v", "7M", "-maxrate", "10500k", "-bufsize", "14M", "-tag:v", "hvc1"],
     "audio": ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"],
@@ -46,10 +59,56 @@
   },
   "h265_preview_x265": {
     "description": "As h265_preview, encoded in software (no NVIDIA GPU needed, slower)",
+    "kind": "movie",
     "ext": "mp4",
+    "space": "yuv",
     "pixFmt": "yuv420p",
     "video": ["-c:v", "libx265", "-preset", "medium", "-profile:v", "main", "-b:v", "7M", "-maxrate", "10500k", "-bufsize", "14M", "-x265-params", "log-level=error", "-tag:v", "hvc1"],
     "audio": ["-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-ac", "2"],
     "extra": ["-movflags", "+faststart"]
+  },
+  "jpg": {
+    "description": "JPEG image sequence, 8-bit 4:4:4, high quality",
+    "kind": "sequence",
+    "ext": "jpg",
+    "space": "jpeg",
+    "pixFmt": "yuvj444p",
+    "video": ["-c:v", "mjpeg", "-q:v", "2"]
+  },
+  "png8": {
+    "description": "PNG image sequence, 8-bit RGB (alpha optional)",
+    "kind": "sequence",
+    "ext": "png",
+    "space": "rgb",
+    "pixFmt": "rgb24",
+    "alphaPixFmt": "rgba",
+    "video": ["-c:v", "png"]
+  },
+  "png16": {
+    "description": "PNG image sequence, 16-bit RGB (alpha optional)",
+    "kind": "sequence",
+    "ext": "png",
+    "space": "rgb",
+    "pixFmt": "rgb48be",
+    "alphaPixFmt": "rgba64be",
+    "video": ["-c:v", "png"]
+  },
+  "exr16": {
+    "description": "OpenEXR image sequence, 16-bit half float (alpha optional)",
+    "kind": "sequence",
+    "ext": "exr",
+    "space": "float",
+    "pixFmt": "gbrpf32le",
+    "alphaPixFmt": "gbrapf32le",
+    "video": ["-c:v", "exr", "-format", "half"]
+  },
+  "exr32": {
+    "description": "OpenEXR image sequence, 32-bit float (alpha optional)",
+    "kind": "sequence",
+    "ext": "exr",
+    "space": "float",
+    "pixFmt": "gbrpf32le",
+    "alphaPixFmt": "gbrapf32le",
+    "video": ["-c:v", "exr", "-format", "float"]
   }
 }

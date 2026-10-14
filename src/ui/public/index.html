@@ -58,10 +58,11 @@
     <label class="label" for="template">Folders and file name <span class="muted">— use / for folders; the extension comes from the format</span></label>
     <input type="text" id="template" class="path mono" spellcheck="false" autocomplete="off">
     <div class="chips" id="chips" aria-label="Insert a variable"></div>
-    <div class="grid3">
+    <div class="grid4">
       <label class="field"><span class="label">{version}</span><input type="text" id="version-input" autocomplete="off"></label>
       <label class="field"><span class="label">{string}</span><input type="text" id="string" placeholder="optional" autocomplete="off"></label>
       <label class="field"><span class="label">Handles (frames)</span><input type="number" id="handles" min="0" step="1"></label>
+      <label class="field"><span class="label">Sequence first frame</span><input type="number" id="startFrame" min="0" step="1" title="Number of the first image (first handle frame) of image sequences"></label>
     </div>
     <div class="examples" id="examples"></div>
   </section>
@@ -122,12 +123,18 @@
     </div>
     <p class="preset-desc"></p>
     <div class="grid2">
-      <label class="field" data-show="applelog-rec709"><span class="label">Exposure <span class="muted">(stops, 0 = neutral)</span></span><input type="number" data-k="exposure" min="-6" max="6" step="0.25"></label>
-      <div class="field" data-show="lut">
+      <label class="field" data-show-color="applelog-rec709 applelog-acescg"><span class="label">Exposure <span class="muted">(stops, 0 = neutral)</span></span><input type="number" data-k="exposure" min="-6" max="6" step="0.25"></label>
+      <div class="field" data-show-color="lut">
         <span class="label">LUT file</span>
         <div class="row"><input type="text" data-k="lut" class="path" placeholder="Path to a .cube LUT" spellcheck="false"><button type="button" class="btn" data-act="pick-lut">Browse…</button></div>
       </div>
       <label class="field"><span class="label">{colorSpace} label</span><input type="text" data-k="colorSpace" autocomplete="off"></label>
+    </div>
+    <div class="grid3">
+      <label class="field"><span class="label">Resolution</span><select data-k="scale"></select></label>
+      <label class="field" data-show-scale="custom"><span class="label">Width (pixels) <span class="muted">— height follows</span></span><input type="number" data-k="width" min="16" max="16384" step="2"></label>
+      <label class="field" data-show-ext="exr"><span class="label">EXR compression</span><select data-k="exrCompression"></select></label>
+      <label class="check" data-show-alpha><input type="checkbox" data-k="alpha"> Alpha channel <span class="muted">(opaque)</span></label>
     </div>
   </div>
 </template>

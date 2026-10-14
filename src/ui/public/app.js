@@ -59,7 +59,7 @@ function save() {
 }
 
 function autoColorSpace(o) {
-  return o.color === 'none' ? 'LOG' : 'REC709';
+  return { none: 'LOG', 'applelog-acescg': 'ACESCG' }[o.color] ?? 'REC709';
 }
 
 // ---- form ---------------------------------------------------------------------------
@@ -71,6 +71,7 @@ const SIMPLE = [
   ['version-input', 'version'],
   ['string', 'string'],
   ['handles', 'handles'],
+  ['startFrame', 'startFrame'],
   ['frameMatch', 'frameMatch'],
   ['jobs', 'jobs'],
 ];
@@ -162,25 +163,42 @@ function renderOutputs() {
   state.outputs.forEach((o, i) => {
     const card = tpl.content.firstElementChild.cloneNode(true);
     const presetSel = card.querySelector('[data-k="preset"]');
-    for (const [name, p] of Object.entries(meta.presets)) presetSel.append(el('option', { value: name, text: `${name}  (.${p.ext})` }));
-    const colorSel = card.querySelector('[data-k="color"]');
-    for (const [k, label] of Object.entries(meta.colorModes)) colorSel.append(el('option', { value: k, text: label }));
+    for (const [kind, label] of [['movie', 'Movies'], ['sequence', 'Image sequences']]) {
+      const group = el('optgroup', { label });
+      for (const [name, p] of Object.entries(meta.presets)) {
+        if ((p.kind ?? 'movie') === kind) group.append(el('option', { value: name, text: `${name}  (.${p.ext})` }));
+      }
+      if (group.children.length) presetSel.append(group);
+    }
+    const fill = (k, entries) => {
+      const sel = card.querySelector(`[data-k="${k}"]`);
+      for (const [value, text] of Object.entries(entries)) sel.append(el('option', { value, text }));
+    };
+    fill('color', meta.colorModes);
+    fill('scale', meta.scales);
+    fill('exrCompression', meta.exrCompression);
 
     const refresh = () => {
       const p = meta.presets[o.preset];
       const title = card.querySelector('.output-title');
       title.textContent = `Output ${i + 1}`;
-      title.append(el('small', { text: `${o.preset} · .${p?.ext ?? '?'} · ${o.colorSpace || autoColorSpace(o)}` }));
+      const res = o.scale === 'custom' ? `${o.width}px wide` : o.scale === 'full' ? '' : `${o.scale} res`;
+      const bits = [o.preset, p?.kind === 'sequence' ? `.${p.ext} sequence` : `.${p?.ext ?? '?'}`, o.colorSpace || autoColorSpace(o), res, o.alpha && p?.alphaPixFmt ? 'alpha' : ''];
+      title.append(el('small', { text: bits.filter(Boolean).join(' · ') }));
       card.querySelector('.preset-desc').textContent = p?.description ?? '';
-      for (const f of card.querySelectorAll('[data-show]')) f.hidden = f.dataset.show !== o.color;
+      for (const f of card.querySelectorAll('[data-show-color]')) f.hidden = !f.dataset.showColor.split(' ').includes(o.color);
+      for (const f of card.querySelectorAll('[data-show-scale]')) f.hidden = f.dataset.showScale !== o.scale;
+      for (const f of card.querySelectorAll('[data-show-ext]')) f.hidden = f.dataset.showExt !== p?.ext;
+      for (const f of card.querySelectorAll('[data-show-alpha]')) f.hidden = !p?.alphaPixFmt;
       card.querySelector('[data-k="colorSpace"]').placeholder = `${autoColorSpace(o)} (automatic)`;
     };
 
     for (const input of card.querySelectorAll('[data-k]')) {
       const k = input.dataset.k;
-      input.value = o[k] ?? '';
-      input.addEventListener(input.tagName === 'SELECT' ? 'change' : 'input', () => {
-        o[k] = input.type === 'number' ? Number(input.value) : input.value;
+      if (input.type === 'checkbox') input.checked = Boolean(o[k]);
+      else input.value = o[k] ?? '';
+      input.addEventListener(input.tagName === 'SELECT' || input.type === 'checkbox' ? 'change' : 'input', () => {
+        o[k] = input.type === 'checkbox' ? input.checked : input.type === 'number' ? Number(input.value) : input.value;
         refresh();
         changed();
       });
@@ -271,7 +289,9 @@ function renderPlan() {
   $('examples').textContent = '';
   const first = p.jobs.filter((j) => j.clip === 0);
   for (const j of first) {
-    $('examples').append(el('div', { class: 'example' }, el('b', { text: `Output ${j.output + 1}` }), j.rel));
+    $('examples').append(
+      el('div', { class: 'example' }, el('b', { text: `Output ${j.output + 1}` }), j.rel, j.frameRange ? el('b', { text: `  frames ${j.frameRange}` }) : null),
+    );
   }
   if (p.out && first.length) $('examples').append(el('div', { class: 'hint', text: `in ${p.out}` }));
 
@@ -285,7 +305,8 @@ function renderPlan() {
   status.textContent = '';
   if (!state.xml) status.textContent = 'Choose an edit XML to begin.';
   else if (p.jobs.length) {
-    status.append(el('strong', { text: `${todo} file${todo === 1 ? '' : 's'}` }), ` to publish — ${p.clips.length} clips × ${p.outputs.length} output${p.outputs.length === 1 ? '' : 's'}`);
+    const n = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+    status.append(el('strong', { text: n(todo, 'file') }), ` to publish — ${n(p.clips.length, 'clip')} × ${n(p.outputs.length, 'output')}`);
     if (kept) status.append(`, ${kept} existing kept`);
   }
   $('publish').disabled = busy || errs.length > 0 || !state.xml || todo === 0;
@@ -344,7 +365,7 @@ function onEvent(e) {
             el('td', { text: c.shot }),
             el('td', { text: c.name }),
             el('td', { text: `${j.output + 1} · ${o.preset}` }),
-            el('td', { class: 'file', text: j.rel }),
+            el('td', { class: 'file', text: j.frameRange ? `${j.rel}  (${j.frameRange})` : j.rel }),
             el('td', { class: 'w-bar' }, el('div', { class: 'bar' }, el('div'))),
             el('td', {}, el('span', { class: 'st' })),
           ),
@@ -427,6 +448,7 @@ async function init() {
     version: d.version,
     string: d.string,
     handles: d.handles,
+    startFrame: d.startFrame,
     frameMatch: d.frameMatch,
     jobs: d.jobs,
     existing: d.existing,

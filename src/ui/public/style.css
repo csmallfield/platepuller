@@ -63,6 +63,9 @@ select { appearance: none; padding-right: 30px; background-image: linear-gradien
 .check { display: flex; gap: 8px; align-items: center; align-self: end; padding-bottom: 8px; color: var(--muted); }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 14px; }
+.output .grid3 { margin-top: 10px; }
+.check .muted { margin-left: 2px; }
 
 .segmented { display: inline-flex; background: var(--bg); border: 1px solid var(--line-2); border-radius: var(--radius); padding: 2px; }
 .segmented input { position: absolute; opacity: 0; pointer-events: none; }
@@ -128,7 +131,7 @@ td.w-bar, th.w-bar { width: 22%; min-width: 120px; }
 .actions { display: flex; gap: 10px; }
 
 @media (max-width: 760px) {
-  .grid2, .grid3 { grid-template-columns: 1fr; }
+  .grid2, .grid3, .grid4 { grid-template-columns: 1fr; }
   .top, main { padding-left: 16px; padding-right: 16px; }
   .bar-bottom { padding: 10px 16px; }
 }

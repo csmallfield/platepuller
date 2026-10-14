@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { FRAME_MATCH } from '../encode.js';
 import { VARIABLES } from '../template.js';
-import { COLOR_MODES, DEFAULTS, loadPresets, preparePublish, runPublish } from '../publish.js';
+import { COLOR_MODES, DEFAULTS, EXR_COMPRESSION, SCALES, loadPresets, preparePublish, runPublish } from '../publish.js';
 import { pick, reveal, openBrowser } from './dialogs.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -50,7 +50,7 @@ function summarize(plan) {
     out: plan.out ?? null,
     editSource: plan.editSource ?? null,
     sequenceName: plan.edit?.sequenceName ?? null,
-    outputs: plan.outputs.map((o) => ({ preset: o.preset, color: o.color, colorSpace: o.colorSpace })),
+    outputs: plan.outputs.map((o) => ({ preset: o.preset, color: o.color, colorSpace: o.colorSpace, kind: presets[o.preset]?.kind })),
     clips: clips.map((c, i) => {
       const j = firstJob.get(i);
       return {
@@ -72,7 +72,9 @@ function summarize(plan) {
       clip: j.index,
       output: j.output.index,
       path: j.outPath,
-      rel: path.relative(plan.out, j.outPath),
+      rel: path.relative(plan.out, j.displayPath),
+      size: `${j.size.width}x${j.size.height}`,
+      frameRange: j.seq ? `${j.seq.start}–${j.seq.start + j.range.frames - 1}` : null,
       frames: j.range.frames,
       status: j.status,
     })),
@@ -125,7 +127,16 @@ function readJson(req) {
 
 const API = {
   async meta() {
-    return { version: pkg.version, presets, colorModes: COLOR_MODES, variables: VARIABLES, defaults: DEFAULTS, frameMatch: FRAME_MATCH };
+    return {
+      version: pkg.version,
+      presets,
+      colorModes: COLOR_MODES,
+      scales: SCALES,
+      exrCompression: EXR_COMPRESSION,
+      variables: VARIABLES,
+      defaults: DEFAULTS,
+      frameMatch: FRAME_MATCH,
+    };
   },
   async plan(body) {
     return summarize(await preparePublish(body.settings ?? {}, presets));

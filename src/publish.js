@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { parseXmeml, readVideoClips, writeProcessedXml } from './xmeml.js';
 import { probeSource } from './probe.js';
 import { buildJobs, findCollisions } from './plan.js';
-import { encodeJob, FRAME_MATCH } from './encode.js';
+import { encodeJob, outputExists, FRAME_MATCH } from './encode.js';
 import { validateTemplate } from './template.js';
-import { writeBuiltinLut } from './applelog.js';
+import { writeBuiltinLut, writeLinearLut } from './applelog.js';
+import { conversionMatrix } from './colormath.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const BUILTIN_PRESETS = JSON.parse(fs.readFileSync(path.join(here, 'presets.json'), 'utf8'));
@@ -16,8 +17,14 @@ export const BUILTIN_PRESETS = JSON.parse(fs.readFileSync(path.join(here, 'prese
 export const COLOR_MODES = {
   none: 'No conversion (keep source)',
   'applelog-rec709': 'Apple Log → Rec.709 (built-in, approximate)',
+  'applelog-acescg': 'Apple Log → ACEScg (scene-linear, EXR only)',
   lut: 'Custom 3D LUT (.cube)',
 };
+const COLOR_SPACE_LABEL = { none: 'LOG', 'applelog-rec709': 'REC709', 'applelog-acescg': 'ACESCG', lut: 'REC709' };
+
+export const SCALES = { full: 'Full', half: 'Half', quarter: 'Quarter', custom: 'Custom width' };
+
+export const EXR_COMPRESSION = { zip16: 'ZIP (16 lines)', zip1: 'ZIPS (1 line)', rle: 'RLE', none: 'None' };
 
 export const DEFAULTS = {
   template: '{editSource}/{clipName}/{clipName}_{colorSpace}_{version}_{preset}',
@@ -28,7 +35,18 @@ export const DEFAULTS = {
   frameMatch: 'nearest',
   existing: 'stop', // stop | overwrite | skip
   includeDisabled: false,
-  output: { preset: 'prores422hq', color: 'none', exposure: 0, lut: '', colorSpace: '' }, // exposure in stops
+  startFrame: 1001, // number of the first frame (first handle frame) of image sequences
+  output: {
+    preset: 'prores422hq',
+    color: 'none',
+    exposure: 0, // stops
+    lut: '',
+    colorSpace: '',
+    scale: 'full',
+    width: 1920, // for scale: 'custom'
+    alpha: false,
+    exrCompression: 'zip16',
+  },
 };
 
 export function loadPresets(extraFile) {
@@ -40,13 +58,26 @@ export function loadPresets(extraFile) {
 export function normalizeOutput(raw, presets) {
   const o = { ...DEFAULTS.output, ...raw };
   o.exposure = Number(o.exposure);
+  o.width = Number(o.width);
+  o.alpha = Boolean(o.alpha);
+  const preset = presets[o.preset];
   const errors = [];
-  if (!presets[o.preset]) errors.push(`Unknown preset "${o.preset}"`);
+  if (!preset) errors.push(`Unknown preset "${o.preset}"`);
   if (!COLOR_MODES[o.color]) errors.push(`Unknown colour mode "${o.color}"`);
   if (o.color === 'lut' && !o.lut) errors.push('Choose a LUT file');
   else if (o.color === 'lut' && !fs.existsSync(o.lut)) errors.push(`LUT not found: ${o.lut}`);
-  if (o.color === 'applelog-rec709' && !(Math.abs(o.exposure) <= 6)) errors.push('Exposure must be between -6 and +6 stops');
-  o.colorSpace = String(o.colorSpace ?? '').trim() || (o.color === 'none' ? 'LOG' : 'REC709');
+  if (o.color.startsWith('applelog-') && !(Math.abs(o.exposure) <= 6)) errors.push('Exposure must be between -6 and +6 stops');
+  if (o.color === 'applelog-acescg' && preset && preset.space !== 'float') {
+    errors.push('ACEScg is scene-linear and needs a float format: choose exr16 or exr32');
+  }
+  if (!SCALES[o.scale]) errors.push(`Unknown resolution "${o.scale}"`);
+  if (o.scale === 'custom' && !(Number.isInteger(o.width) && o.width >= 16 && o.width <= 16384)) {
+    errors.push('Custom width must be a whole number of pixels (16 to 16384)');
+  }
+  if (o.alpha && preset && !preset.alphaPixFmt) errors.push(`${o.preset} has no alpha channel option`);
+  if (preset?.ext === 'exr' && !EXR_COMPRESSION[o.exrCompression]) errors.push(`Unknown EXR compression "${o.exrCompression}"`);
+  if (!preset || !preset.alphaPixFmt) o.alpha = false;
+  o.colorSpace = String(o.colorSpace ?? '').trim() || COLOR_SPACE_LABEL[o.color] || 'LOG';
   return { output: o, errors };
 }
 
@@ -58,11 +89,13 @@ export async function preparePublish(settings, presets = BUILTIN_PRESETS) {
   const s = { ...DEFAULTS, ...settings };
   s.handles = Number(s.handles);
   s.jobs = Math.max(1, Number(s.jobs) || 1);
+  s.startFrame = Number(s.startFrame);
   const errors = [];
   const notes = [];
 
   if (!Number.isInteger(s.handles) || s.handles < 0) errors.push('Handles must be a whole number of frames');
   if (!FRAME_MATCH[s.frameMatch]) errors.push(`Unknown frame match "${s.frameMatch}"`);
+  if (!Number.isInteger(s.startFrame) || s.startFrame < 0) errors.push('Sequence start frame must be a whole number, 0 or more');
   let templateOk = true;
   try {
     validateTemplate(s.template);
@@ -128,7 +161,7 @@ export async function preparePublish(settings, presets = BUILTIN_PRESETS) {
   result.jobs = buildJobs({ edit, probes, presets, outputs: validOutputs, opts: { ...s, out: result.out }, editSource: result.editSource });
   result.jobs.forEach((j, i) => {
     j.id = i;
-    const exists = fs.existsSync(j.outPath);
+    const exists = outputExists(j);
     j.exists = exists;
     j.status = exists && s.existing === 'skip' ? 'kept' : exists && s.existing !== 'overwrite' ? 'exists' : 'todo';
   });
@@ -170,13 +203,31 @@ function csvCell(v) {
 }
 
 function writeReport(file, jobs) {
-  const header = ['shot', 'clipName', 'output', 'preset', 'colorSpace', 'status', 'source', 'clipIn', 'clipOut', 'headHandle', 'tailHandle', 'publishedFirstFrame', 'publishedLastFrame', 'frames', 'file', 'warnings'];
+  const header = [
+    'shot', 'clipName', 'output', 'preset', 'colorSpace', 'resolution', 'status', 'source', 'clipIn', 'clipOut', 'headHandle', 'tailHandle',
+    'publishedFirstFrame', 'publishedLastFrame', 'frames', 'sequenceFirstFrame', 'sequenceLastFrame', 'file', 'warnings',
+  ];
   const rows = jobs.map((j) => [
-    j.shot, j.clip.name, j.output.index + 1, j.presetName, j.output.colorSpace, j.status, j.clip.file.path, j.clip.in, j.clip.out - 1,
-    j.range.head, j.range.tail, j.range.start, j.range.end - 1, j.range.frames, j.outPath,
+    j.shot, j.clip.name, j.output.index + 1, j.presetName, j.output.colorSpace, `${j.size.width}x${j.size.height}`, j.status, j.clip.file.path,
+    j.clip.in, j.clip.out - 1, j.range.head, j.range.tail, j.range.start, j.range.end - 1, j.range.frames,
+    j.seq ? j.seq.start : '', j.seq ? j.seq.start + j.range.frames - 1 : '', j.displayPath,
     [...j.warnings, j.error].filter(Boolean).join('; '),
   ]);
   fs.writeFileSync(file, [header, ...rows].map((r) => r.map(csvCell).join(',')).join('\n') + '\n');
+}
+
+/** What the encoder needs for an output's colour mode: LUT files and matrices. */
+export function colorResources(o) {
+  switch (o.color) {
+    case 'applelog-rec709':
+      return { mode: o.color, lut3d: writeBuiltinLut(o.exposure), display: 'rec709' };
+    case 'lut':
+      return { mode: o.color, lut3d: path.resolve(o.lut), display: 'rec709' };
+    case 'applelog-acescg':
+      return { mode: o.color, lut1d: writeLinearLut(o.exposure), matrix: conversionMatrix('rec2020', 'acescg') };
+    default:
+      return { mode: 'none' };
+  }
 }
 
 /** File name suffix for each output's processed XML: "_processed" or "_<preset>_<colorSpace>_processed". */
@@ -200,7 +251,7 @@ export async function runPublish(prepared, { onEvent = () => {}, signal } = {}) 
   if (prepared.errors.length) throw new Error(prepared.errors.join('\n'));
   const { settings: s, jobs, outputs, out, editSource, xmlText } = prepared;
 
-  const luts = outputs.map((o) => (o.color === 'lut' ? path.resolve(o.lut) : o.color === 'applelog-rec709' ? writeBuiltinLut(o.exposure) : null));
+  const colors = outputs.map(colorResources);
   const todo = jobs.filter((j) => j.status === 'todo');
   onEvent({ type: 'start', total: todo.length, out });
 
@@ -214,8 +265,7 @@ export async function runPublish(prepared, { onEvent = () => {}, signal } = {}) 
       onEvent({ type: 'job-start', id: j.id });
       try {
         await encodeJob(j, {
-          lut: luts[j.output.index],
-          colorSpaceOut: j.output.color === 'none' ? 'source' : 'rec709',
+          color: colors[j.output.index],
           frameMatch: s.frameMatch,
           signal,
           onProgress: (frame) => onEvent({ type: 'job-progress', id: j.id, frame, frames: j.range.frames }),
@@ -245,6 +295,10 @@ export async function runPublish(prepared, { onEvent = () => {}, signal } = {}) 
   outputs.forEach((o, i) => {
     const forOutput = jobs.filter((j) => j.output.index === o.index);
     if (!forOutput.length) return;
+    if (forOutput[0].preset.kind === 'sequence') {
+      onEvent({ type: 'file', kind: 'xml-skipped', output: i, reason: 'image sequences are not relinked in an XML' });
+      return;
+    }
     if (forOutput.some((j) => !['ok', 'kept'].includes(j.status))) {
       onEvent({ type: 'file', kind: 'xml-skipped', output: i, reason: 'not every clip was published' });
       return;
@@ -255,8 +309,8 @@ export async function runPublish(prepared, { onEvent = () => {}, signal } = {}) 
       outFrames: j.range.frames,
       headHandle: j.range.head,
       timecodeFrame: (j.clip.file.timecodeFrame ?? 0) + j.range.start,
-      width: j.probe.width,
-      height: j.probe.height,
+      width: j.size.width,
+      height: j.size.height,
       audioChannels: j.probe.audio?.channels ?? 0,
       audioSampleRate: j.probe.audio?.sampleRate,
     }));

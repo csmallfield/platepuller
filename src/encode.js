@@ -44,43 +44,102 @@ export function selectionFilters(job, frameMatch) {
   return { seek, video, audio, rate };
 }
 
-function colorFilters(lut, pixFmt) {
-  if (!lut) return [`format=${pixFmt}`];
-  const lutPath = lut.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
-  return [
-    'scale=in_color_matrix=bt2020:in_range=tv:out_range=pc',
-    'format=gbrp16le',
-    `lut3d=file='${lutPath}':interp=tetrahedral`,
-    'scale=out_color_matrix=bt709:out_range=tv',
-    `format=${pixFmt}`,
-  ];
+// A path inside a filtergraph option: forward slashes, escaped colons and quotes.
+const filterPath = (p) => p.replace(/\\/g, '/').replace(/:/g, '\\:').replace(/'/g, "\\'");
+
+// swscale's name for the source YUV matrix
+function sourceMatrix(probe) {
+  const cs = probe.colorSpace ?? '';
+  if (cs.startsWith('bt2020')) return 'bt2020';
+  if (cs === 'smpte170m' || cs === 'bt470bg') return 'bt601';
+  return 'bt709';
 }
 
-export function ffmpegArgs(job, { lut, colorSpaceOut, frameMatch = 'nearest' }) {
-  const { probe, range, preset, clip } = job;
+/**
+ * Colour conversion, resize and final pixel format for one output.
+ * Stays in the source's YUV when nothing needs RGB; otherwise works in 16-bit or float RGB.
+ */
+export function imageFilters(job, color) {
+  const { preset, output, probe, size } = job;
+  const target = preset.space; // yuv | rgb | jpeg | float
+  const pixFmt = output.alpha && preset.alphaPixFmt ? preset.alphaPixFmt : preset.pixFmt;
+  const matrix = sourceMatrix(probe);
+  const f = [];
+  let rgb = false;
+  const toRgb = (fmt) => {
+    f.push(`scale=in_color_matrix=${matrix}:in_range=tv:out_range=pc`, `format=${fmt}`);
+    rgb = true;
+  };
+
+  if (color.mode === 'applelog-rec709' || color.mode === 'lut') {
+    toRgb('gbrp16le');
+    f.push(`lut3d=file='${filterPath(color.lut3d)}':interp=tetrahedral`);
+  } else if (color.mode === 'applelog-acescg') {
+    // log -> scene-linear Rec.2020 (1D LUT), then Rec.2020 -> ACEScg primaries (matrix), all in float
+    toRgb('gbrpf32le');
+    const m = color.matrix;
+    const mix = ['r', 'g', 'b'].flatMap((o, i) => ['r', 'g', 'b'].map((c, j) => `${o}${c}=${m[i][j].toFixed(8)}`)).join(':');
+    f.push(`lut1d=file='${filterPath(color.lut1d)}':interp=linear`, `colorchannelmixer=${mix}`);
+  } else if (target !== 'yuv') {
+    toRgb(target === 'float' ? 'gbrpf32le' : 'gbrp16le');
+  }
+
+  const resize = size.width !== probe.width || size.height !== probe.height;
+  if (target === 'float') {
+    // swscale clamps float to 0-1 (and works in integers), which would clip scene-linear
+    // highlights; zimg keeps floats intact, so it does the resize and the final conversion.
+    f.push(resize ? `zscale=w=${size.width}:h=${size.height}:filter=lanczos` : 'zscale');
+  } else if (resize) {
+    f.push(`scale=${size.width}:${size.height}:flags=lanczos`);
+  }
+
+  if (rgb && target === 'yuv') f.push(`scale=out_color_matrix=${color.display === 'rec709' ? 'bt709' : matrix}:out_range=tv`);
+  if (target === 'jpeg') f.push('scale=out_color_matrix=bt601:out_range=pc'); // JPEG/JFIF is full-range BT.601
+  f.push(`format=${pixFmt}`);
+
+  if (preset.kind === 'movie') {
+    // Tag through the filter graph: frames carry the source's colour properties, and those
+    // win over encoder-level -color_* options.
+    const tags =
+      color.display === 'rec709'
+        ? { color_primaries: 'bt709', color_trc: 'bt709', colorspace: 'bt709' }
+        : {
+            ...(probe.colorPrimaries && probe.colorPrimaries !== 'unknown' ? { color_primaries: probe.colorPrimaries } : {}),
+            ...(probe.colorTransfer && probe.colorTransfer !== 'unknown' ? { color_trc: probe.colorTransfer } : {}),
+            ...(probe.colorSpace && probe.colorSpace !== 'unknown' ? { colorspace: probe.colorSpace } : {}),
+          };
+    f.push('setparams=' + Object.entries({ range: 'tv', ...tags }).map(([k, v]) => `${k}=${v}`).join(':'));
+  }
+  return f;
+}
+
+/** ffmpeg arguments for one job. `outPath` is the movie file, or the frame pattern for a sequence. */
+export function ffmpegArgs(job, { color = { mode: 'none' }, frameMatch = 'nearest' } = {}, outPath = job.outPath) {
+  const { probe, range, preset, clip, output } = job;
   const sel = selectionFilters(job, frameMatch);
+  const input = ['-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-y', '-copyts', '-ss', t6(sel.seek), '-i', clip.file.path];
+  const vf = [...sel.video, ...imageFilters(job, color)].join(',');
+
+  if (preset.kind === 'sequence') {
+    return [
+      ...input,
+      '-map', '0:v:0',
+      '-vf', vf,
+      '-frames:v', String(range.frames),
+      ...preset.video,
+      ...(preset.ext === 'exr' ? ['-compression', output.exrCompression ?? 'zip16'] : []),
+      '-an', '-map_metadata', '-1',
+      '-f', 'image2', '-start_number', String(job.seq.start),
+      outPath,
+    ];
+  }
+
   const tcFrame = (clip.file.timecodeFrame ?? 0) + range.start;
-
-  // Tag through the filter graph: frames carry the source's colour properties, and those
-  // win over encoder-level -color_* options.
-  const tags =
-    colorSpaceOut === 'rec709'
-      ? { color_primaries: 'bt709', color_trc: 'bt709', colorspace: 'bt709' }
-      : {
-          ...(probe.colorPrimaries && probe.colorPrimaries !== 'unknown' ? { color_primaries: probe.colorPrimaries } : {}),
-          ...(probe.colorTransfer && probe.colorTransfer !== 'unknown' ? { color_trc: probe.colorTransfer } : {}),
-          ...(probe.colorSpace && probe.colorSpace !== 'unknown' ? { colorspace: probe.colorSpace } : {}),
-        };
-  const setparams = 'setparams=' + Object.entries({ range: 'tv', ...tags }).map(([k, v]) => `${k}=${v}`).join(':');
-
   return [
-    '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1', '-y',
-    '-copyts',
-    '-ss', t6(sel.seek),
-    '-i', clip.file.path,
+    ...input,
     '-map', '0:v:0',
     ...(probe.audio ? ['-map', '0:a:0'] : []),
-    '-vf', [...sel.video, ...colorFilters(lut, preset.pixFmt), setparams].join(','),
+    '-vf', vf,
     ...(probe.audio ? ['-af', sel.audio.join(',')] : []),
     '-frames:v', String(range.frames),
     '-r', fpsExpr(sel.rate),
@@ -91,7 +150,7 @@ export function ffmpegArgs(job, { lut, colorSpaceOut, frameMatch = 'nearest' }) 
     '-map_chapters', '-1',
     '-timecode', framesToTimecode(tcFrame, sel.rate, clip.file.dropFrame),
     '-metadata', `comment=platepuller source=${path.basename(clip.file.path)} frames=${range.start}-${range.end - 1} clip=${clip.name}`,
-    job.outPath,
+    outPath,
   ];
 }
 
@@ -128,15 +187,54 @@ export function runFfmpeg(args, { ffmpeg = 'ffmpeg', onProgress, signal } = {}) 
   });
 }
 
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function sequenceFrames(seq, dir = seq.dir) {
+  if (!fs.existsSync(dir)) return [];
+  const re = new RegExp(`^${escapeRe(seq.name)}\\.\\d+\\.${escapeRe(seq.ext)}$`, 'i');
+  return fs.readdirSync(dir).filter((f) => re.test(f));
+}
+
+/** True when this job's movie file, or any frame of its sequence, is already on disk. */
+export function outputExists(job) {
+  return job.seq ? sequenceFrames(job.seq).length > 0 : fs.existsSync(job.outPath);
+}
+
+// A killed ffmpeg can hold files for a moment on Windows, hence the retries.
+const rm = (p) => fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+
+/**
+ * Encode one job. Everything is written next to the target first (file.partial.mov or
+ * folder.partial/) and only moved into place once ffmpeg has succeeded.
+ */
 export async function encodeJob(job, opts) {
+  if (job.seq) return encodeSequence(job, opts);
   fs.mkdirSync(path.dirname(job.outPath), { recursive: true });
   const tmp = job.outPath.replace(/(\.[^.]+)$/, '.partial$1');
   try {
-    await runFfmpeg(ffmpegArgs({ ...job, outPath: tmp }, opts), opts);
+    await runFfmpeg(ffmpegArgs(job, opts, tmp), opts);
     fs.renameSync(tmp, job.outPath);
   } catch (err) {
-    // a killed ffmpeg can hold the file for a moment on Windows
-    fs.rmSync(tmp, { force: true, maxRetries: 10, retryDelay: 200 });
+    rm(tmp);
+    throw err;
+  }
+}
+
+async function encodeSequence(job, opts) {
+  const seq = job.seq;
+  const tmp = `${seq.dir}.partial`;
+  rm(tmp);
+  fs.mkdirSync(tmp, { recursive: true });
+  // The image2 muxer expands % anywhere in the path, so literal % signs are doubled.
+  const pattern = path.join(tmp, seq.name).replace(/%/g, '%%') + `.%0${seq.pad}d.${seq.ext}`;
+  try {
+    await runFfmpeg(ffmpegArgs(job, opts, pattern), opts);
+    fs.mkdirSync(seq.dir, { recursive: true });
+    for (const f of sequenceFrames(seq)) fs.rmSync(path.join(seq.dir, f)); // frames of an earlier version
+    for (const f of fs.readdirSync(tmp)) fs.renameSync(path.join(tmp, f), path.join(seq.dir, f));
+    rm(tmp);
+  } catch (err) {
+    rm(tmp);
     throw err;
   }
 }

@@ -21,9 +21,13 @@ Options
       --handles <n>        Handle length in frames (default: ${DEFAULTS.handles})
       --string <s>         {string} value
       --color-space <s>    {colorSpace} label (default: LOG, or REC709 when converting)
-      --convert <name>     Built-in colour conversion: applelog-rec709
+      --convert <name>     Built-in colour conversion: applelog-rec709, applelog-acescg (EXR only)
       --lut <file.cube>    Apply this 3D LUT (e.g. Apple's official Apple Log to Rec709 LUT)
-      --exposure <stops>   Exposure for --convert applelog-rec709, in stops (default: 0 = neutral)
+      --exposure <stops>   Exposure for the Apple Log conversions, in stops (default: 0 = neutral)
+      --scale <s>          Output size: full, half, quarter, or a width in pixels (default: full)
+      --alpha              Add an alpha channel (png8, png16, exr16, exr32, prores4444)
+      --exr-compression <c> EXR compression: zip16 (ZIP, default), zip1 (ZIPS), rle, none
+      --start-frame <n>    Frame number of the first image of a sequence (default: ${DEFAULTS.startFrame})
       --frame-match <m>    How edit frames map to source samples: ${Object.keys(FRAME_MATCH).join(' | ')}
                            (default: nearest, which matches Premiere's time-based conform)
       --config <job.json>  Read options from a JSON file (CLI flags win)
@@ -53,6 +57,10 @@ const OPTIONS = {
   convert: { type: 'string' },
   lut: { type: 'string' },
   exposure: { type: 'string' },
+  scale: { type: 'string' },
+  alpha: { type: 'boolean' },
+  'exr-compression': { type: 'string' },
+  'start-frame': { type: 'string' },
   'frame-match': { type: 'string' },
   config: { type: 'string' },
   presets: { type: 'string' },
@@ -74,11 +82,14 @@ function toSettings(values, positionals) {
   const cli = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined).map(([k, v]) => [camel(k), v]));
   const o = { ...fromConfig, ...cli };
   if (o.convert && o.lut) throw new Error('Use either --convert or --lut, not both');
-  if (o.convert && o.convert !== 'applelog-rec709') throw new Error(`Unknown --convert "${o.convert}". Available: applelog-rec709`);
+  if (o.convert && !['applelog-rec709', 'applelog-acescg'].includes(o.convert)) {
+    throw new Error(`Unknown --convert "${o.convert}". Available: applelog-rec709, applelog-acescg`);
+  }
+  const scale = o.scale === undefined ? {} : /^\d+$/.test(o.scale) ? { scale: 'custom', width: Number(o.scale) } : { scale: o.scale };
   if (o.overwrite && o.skipExisting) throw new Error('Use either --overwrite or --skip-existing');
   if (o.outputs && o.preset) throw new Error('Use either "outputs" in the config file or --preset');
 
-  const color = o.lut ? 'lut' : o.convert ? 'applelog-rec709' : 'none';
+  const color = o.lut ? 'lut' : o.convert ?? 'none';
   const presets = [].concat(o.preset ?? DEFAULTS.output.preset);
   return {
     xml: positionals[0] ?? o.xml,
@@ -91,7 +102,19 @@ function toSettings(values, positionals) {
     frameMatch: o.frameMatch ?? DEFAULTS.frameMatch,
     includeDisabled: Boolean(o.includeDisabled),
     existing: o.overwrite ? 'overwrite' : o.skipExisting ? 'skip' : o.existing ?? 'stop',
-    outputs: o.outputs ?? presets.map((preset) => ({ preset, color, lut: o.lut, exposure: o.exposure ?? DEFAULTS.output.exposure, colorSpace: o.colorSpace })),
+    startFrame: o.startFrame ?? DEFAULTS.startFrame,
+    outputs:
+      o.outputs ??
+      presets.map((preset) => ({
+        preset,
+        color,
+        lut: o.lut,
+        exposure: o.exposure ?? DEFAULTS.output.exposure,
+        colorSpace: o.colorSpace,
+        alpha: Boolean(o.alpha),
+        exrCompression: o.exrCompression ?? DEFAULTS.output.exrCompression,
+        ...scale,
+      })),
   };
 }
 
@@ -122,11 +145,11 @@ async function main() {
     console.log(`${plan.edit.sequenceName}: ${plan.edit.clips.length} clips -> ${plan.out}`);
     const s = plan.settings;
     console.log(`handles ${s.handles}  frame match ${s.frameMatch}`);
-    plan.outputs.forEach((o, i) => console.log(`output ${i + 1}: ${o.preset}, colour ${o.color === 'lut' ? `LUT ${o.lut}` : o.color}, {colorSpace}=${o.colorSpace}`));
+    plan.outputs.forEach((o, i) => console.log(`output ${i + 1}: ${o.preset}, colour ${o.color === 'lut' ? `LUT ${o.lut}` : o.color}, {colorSpace}=${o.colorSpace}, ${o.scale === "custom" ? `${o.width}px wide` : o.scale}${o.alpha ? ", alpha" : ""}`));
     console.log('');
   }
   for (const j of plan.jobs) {
-    const rel = path.relative(plan.out, j.outPath);
+    const rel = path.relative(plan.out, j.displayPath);
     console.log(`${j.shot} ${j.clip.name.padEnd(8)} ${String(j.range.start).padStart(5)}-${String(j.range.end - 1).padEnd(5)} (${j.range.head}+${j.clip.out - j.clip.in}+${j.range.tail})  ${rel}${j.status !== 'todo' ? `  [${j.status}]` : ''}`);
     if (j.output.index === 0) for (const w of j.warnings) console.log(`      ! ${w}`);
   }

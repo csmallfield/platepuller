@@ -17,6 +17,23 @@ export function handleRange(clip, handles, sourceFrames) {
   };
 }
 
+const even = (n) => Math.max(2, 2 * Math.round(n / 2));
+
+/** Output frame size for an output's resolution setting. Even sizes, so 4:2:0 codecs accept them. */
+export function outputSize(source, output) {
+  const { width, height } = source;
+  switch (output.scale) {
+    case 'half':
+      return { width: even(width / 2), height: even(height / 2) };
+    case 'quarter':
+      return { width: even(width / 4), height: even(height / 4) };
+    case 'custom':
+      return { width: even(output.width), height: even((output.width * height) / width) };
+    default:
+      return { width, height };
+  }
+}
+
 export function shotNumber(index, step = 10, width = 3) {
   return String((index + 1) * step).padStart(width, '0');
 }
@@ -54,14 +71,26 @@ export function buildJobs({ edit, probes, presets, outputs, opts, editSource }) 
         compressionPreset: presetName,
         preset: presetName,
         frameRate: rateLabel(clip.file.rate ?? clip.rate),
-        resolution: probe ? `${probe.width}x${probe.height}` : `${clip.file.width}x${clip.file.height}`,
+        resolution: '',
         string: opts.string,
         handles: opts.handles,
         editSource,
       };
+      const size = outputSize(probe ? { width: probe.width, height: probe.height } : { width: clip.file.width, height: clip.file.height }, output);
+      vars.resolution = `${size.width}x${size.height}`;
       const segments = renderTemplate(opts.template, vars);
-      const outPath = path.join(opts.out, ...segments) + '.' + preset.ext;
-      jobs.push({ clip, index, shot: vars.shot, output, presetName, preset, range, probe, outPath, warnings });
+      const job = { clip, index, shot: vars.shot, output, presetName, preset, range, probe, size, warnings };
+      if (preset.kind === 'sequence') {
+        // Frames go in their own folder, named like the files: <name>/<name>.1001.exr
+        const name = segments[segments.length - 1];
+        job.outPath = path.join(opts.out, ...segments);
+        job.seq = { dir: job.outPath, name, ext: preset.ext, start: opts.startFrame ?? 1001, pad: 4 };
+        job.displayPath = path.join(job.outPath, `${name}.${'#'.repeat(job.seq.pad)}.${preset.ext}`);
+      } else {
+        job.outPath = path.join(opts.out, ...segments) + '.' + preset.ext;
+        job.displayPath = job.outPath;
+      }
+      jobs.push(job);
     }
   });
   return jobs;

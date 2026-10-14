@@ -67,11 +67,11 @@ Default: `{editSource}/{clipName}/{clipName}_{colorSpace}_{version}_{preset}`
 | `clipName` | clip name in the edit (e.g. `1A`) |
 | `sourceFilename` / `take` | source file without extension (`IMG_6746`) |
 | `shot` | timeline position: `010`, `020`, … |
-| `colorSpace` | `--color-space`, else `LOG`, or `REC709` when converting |
+| `colorSpace` | `--color-space`, else `LOG`, `REC709` or `ACESCG` depending on the conversion |
 | `version` | `--version` |
 | `compressionPreset` / `preset` | preset name |
 | `frameRate` | `24`, `23.976`, … |
-| `resolution` | `3840x2160` |
+| `resolution` | output size, e.g. `3840x2160`, or `1920x1080` at half resolution |
 | `string` | `--string` |
 | `handles` | `--handles` |
 | `editSource` | XML file name without extension |
@@ -90,9 +90,31 @@ that has no `{clipName}` or `{shot}`), the run stops before encoding anything.
 | `h265_10bit` | .mp4 | x265 CRF 18, 10-bit 4:2:0, AAC |
 | `h265_preview` | .mp4 | HEVC Main, VBR 7 Mbps, full res, 8-bit, AAC 320k, encoded on an NVIDIA GPU (NVENC). Small files for Magnific and similar tools; matches Premiere's `h265_4k_preview`. Needs an NVIDIA driver new enough for the FFmpeg build (FFmpeg 9 needs 610+) |
 | `h265_preview_x265` | .mp4 | Same as `h265_preview`, encoded in software. Use it on machines without a suitable NVIDIA GPU (about 2–3× slower) |
+| `jpg` | image sequence | JPEG, 8-bit 4:4:4, high quality |
+| `png8` / `png16` | image sequence | PNG, 8 or 16 bits per channel, alpha optional |
+| `exr16` / `exr32` | image sequence | OpenEXR, half or full float, alpha optional. Compression: ZIP (default), ZIPS, RLE or none |
 
 Add your own presets with `--presets my-presets.json`, using the same shape as
 [src/presets.json](src/presets.json).
+
+### Image sequences
+
+Each image sequence goes in its own folder, named like its frames:
+`.../1A/1A_ACESCG_v001_exr16/1A_ACESCG_v001_exr16.1001.exr`. Frames are numbered from the
+**sequence first frame** (`--start-frame`, default `1001`), which is the first handle frame, so
+the cut-in is at 1001 + handles. The CSV report lists each sequence's frame range. Sequences carry
+no audio or timecode, and they aren't relinked in a processed XML.
+
+`--alpha` adds an opaque alpha channel to formats that support one: png8, png16, exr16, exr32 and
+prores4444.
+
+### Resolution
+
+Each output can be full, half or quarter resolution, or a custom width; the height follows the
+source's aspect ratio. Sizes are rounded to even numbers. Use this for proxies, for example a
+half-res ProRes or an `h265_preview` alongside a full-res EXR sequence. On the command line, use
+`--scale half`, `--scale quarter` or `--scale 1280`. Float (EXR) outputs are resized in linear
+light, without clipping.
 
 ### Colour
 
@@ -103,6 +125,9 @@ Add your own presets with `--presets my-presets.json`, using the same shape as
   linear → Rec.709 gamut → filmic tone curve → gamma 2.4. It's handy for quick dailies but it is
   **not** Apple's LUT. Use `--exposure` to adjust it, in stops: `0` (default) is neutral, with 18% grey landing at about 44%; `+1` is
   one stop brighter.
+- `--convert applelog-acescg` (EXR only) decodes Apple Log to scene-linear light with Apple's
+  published curve, then converts Rec.2020 primaries to ACEScg (AP1, Bradford adaptation to the
+  ACES white). It uses no tone curve, so highlights above 1.0 are kept. `--exposure` works here too.
 
 ## What it does with each clip
 

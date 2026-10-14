@@ -66,6 +66,26 @@ export function buildCube(size = 33, stops = 0) {
   return lines.join('\n') + '\n';
 }
 
+/**
+ * 1D LUT: Apple Log code value -> scene-linear (Rec.2020 primaries, 1.0 = diffuse white,
+ * 0.18 = mid grey). Values above 1 are kept; it is meant for float (EXR) output.
+ */
+export function buildLinear1D(size = 4096, stops = 0) {
+  const gain = 2 ** stops;
+  const lines = ['TITLE "Apple Log to linear (platepuller)"', `LUT_1D_SIZE ${size}`, 'DOMAIN_MIN 0.0 0.0 0.0', 'DOMAIN_MAX 1.0 1.0 1.0'];
+  for (let i = 0; i < size; i++) {
+    const v = (appleLogToLinear(i / (size - 1)) * gain).toFixed(7);
+    lines.push(`${v} ${v} ${v}`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+export function writeLinearLut(stops = 0) {
+  const file = path.join(os.tmpdir(), `platepuller_applelog_linear_${stops >= 0 ? '+' : ''}${stops}stops.cube`);
+  if (!fs.existsSync(file)) fs.writeFileSync(file, buildLinear1D(4096, stops));
+  return file;
+}
+
 export function writeBuiltinLut(stops = 0) {
   const file = path.join(os.tmpdir(), `platepuller_applelog_rec709_${stops >= 0 ? '+' : ''}${stops}stops.cube`);
   if (!fs.existsSync(file)) fs.writeFileSync(file, buildCube(33, stops));
