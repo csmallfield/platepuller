@@ -34,15 +34,27 @@ export function openexrStatus() {
 }
 
 /**
- * Encode an EXR sequence through OpenEXR: the Python helper runs ffmpeg (`spec.ffmpeg`, which
- * must write raw planar float frames to stdout) and compresses the frames on several threads
- * as they arrive. onProgress(n) after each written frame.
+ * Write an EXR sequence through OpenEXR. The Python helper creates `spec.pipe` (a Windows
+ * named pipe or a POSIX FIFO), then compresses the raw planar float frames ffmpeg writes into
+ * it on several threads. Returns { ready, done }: start ffmpeg once `ready` resolves.
+ * onProgress(n) after each written frame.
  */
-export function streamExrSequence(spec, { onProgress, signal } = {}) {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) return reject(new Error('cancelled'));
-    const proc = spawn(venvPython(), [SCRIPT, '--stream', JSON.stringify(spec)], { windowsHide: true });
-    // The helper runs ffmpeg as a child; on cancel stop the whole tree, not just the parent.
+export function serveExrSequence(spec, { onProgress, signal } = {}) {
+  let markReady;
+  let failReady;
+  const ready = new Promise((resolve, reject) => {
+    markReady = resolve;
+    failReady = reject;
+  });
+  ready.catch(() => {}); // `done` carries the error
+
+  const done = new Promise((resolve, reject) => {
+    const fail = (err) => {
+      failReady(err);
+      reject(err);
+    };
+    if (signal?.aborted) return fail(new Error('cancelled'));
+    const proc = spawn(venvPython(), [SCRIPT, '--serve', JSON.stringify(spec)], { windowsHide: true });
     const kill = () => {
       if (process.platform === 'win32') spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
       else proc.kill('SIGTERM');
@@ -54,8 +66,10 @@ export function streamExrSequence(spec, { onProgress, signal } = {}) {
       buf += d;
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
-        const m = buf.slice(0, i).match(/^done (\d+)/);
+        const line = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
+        if (line === 'ready') markReady();
+        const m = line.match(/^done (\d+)/);
         if (m && onProgress) onProgress(Number(m[1]));
       }
     });
@@ -63,14 +77,15 @@ export function streamExrSequence(spec, { onProgress, signal } = {}) {
     let failure = null;
     proc.on('error', (err) => {
       failure = err;
-      if (proc.pid === undefined) reject(err);
+      if (proc.pid === undefined) fail(err);
     });
     proc.on('close', (code) => {
       signal?.removeEventListener('abort', kill);
-      if (signal?.aborted) reject(new Error('cancelled'));
-      else if (failure) reject(failure);
+      if (signal?.aborted) fail(new Error('cancelled'));
+      else if (failure) fail(failure);
       else if (code === 0) resolve();
-      else reject(new Error(`EXR encoding failed: ${stderr.trim().split('\n').pop()}`));
+      else fail(new Error(`EXR encoding failed: ${stderr.trim().split('\n').pop()}`));
     });
   });
+  return { ready, done };
 }

@@ -34,7 +34,7 @@ Options
                            (default: nearest, which matches Premiere's time-based conform)
       --config <job.json>  Read options from a JSON file (CLI flags win)
       --presets <file>     Extra presets JSON, merged over the built-in ones
-  -j, --jobs <n>           Parallel encodes (default: ${DEFAULTS.jobs})
+  -j, --jobs <n>           Clips encoded at once; each clip is decoded once for all outputs (default: ${DEFAULTS.jobs})
       --include-disabled   Also publish disabled clips
       --overwrite          Replace existing outputs
       --skip-existing      Keep existing outputs, still list them in the XML

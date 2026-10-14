@@ -1,21 +1,21 @@
 """Write OpenEXR sequences with compressions FFmpeg cannot write (DWAA, DWAB, PIZ).
 
 Usage: python exr_recompress.py --check          exit 0 if OpenEXR is usable
-       python exr_recompress.py --stream <spec>  spec is JSON, see below
+       python exr_recompress.py --serve <spec>   spec is JSON, see below
 
-Stream mode runs ffmpeg itself, reads its raw planar float frames (gbrpf32le or
-gbrapf32le) from a pipe and compresses them on several threads. Nothing
-uncompressed is written to disk, which matters a lot on hard drives: a 4K half
-float frame is ~48 MB uncompressed and ~2-5 MB as DWAA.
+Serve mode creates a pipe, prints "ready", and compresses the raw planar float frames
+(gbrpf32le / gbrapf32le) that ffmpeg writes into it, on several threads. Nothing
+uncompressed is written to disk, which matters a lot on hard drives: a 4K half float
+frame is ~48 MB uncompressed and ~2-5 MB as DWAA.
 
-spec: {"ffmpeg": [...argv], "width", "height", "channels": 3|4, "half": bool,
+spec: {"pipe": Windows named pipe (\\\\.\\pipe\\...) or a FIFO path to create,
+       "width", "height", "channels": 3|4, "half": bool,
        "compression": "dwaa"|"dwab"|"piz", "level": float, "dir", "name", "ext",
-       "start", "pad", "threads"}
+       "start", "pad", "frames", "threads"}
 Prints "done <n>" as frames are written.
 """
 import json
 import os
-import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -35,29 +35,24 @@ def read_exact(stream, buf):
 
 
 class NamedPipe:
-    """Windows named pipe with a large buffer. The anonymous pipes subprocess uses carry
-    only ~100 MB/s on Windows; this carries ~1.6 GB/s, which 4K float frames need."""
+    """Windows named pipe with a large buffer. Anonymous pipes carry only ~100 MB/s on
+    Windows; this carries ~1.6 GB/s, which 4K float frames need."""
 
-    def __init__(self, bufsize=16 << 20):
+    def __init__(self, name, bufsize=16 << 20):
         import _winapi
 
         self.w = _winapi
         self.bufsize = bufsize
-        self.name = rf"\\.\pipe\platepuller-{os.getpid()}-{threading.get_ident()}"
         self.handle = _winapi.CreateNamedPipe(
-            self.name, _winapi.PIPE_ACCESS_INBOUND | _winapi.FILE_FLAG_OVERLAPPED, 0, 1, bufsize, bufsize, 0, _winapi.NULL
+            name, _winapi.PIPE_ACCESS_INBOUND | _winapi.FILE_FLAG_OVERLAPPED, 0, 1, bufsize, bufsize, 0, _winapi.NULL
         )
 
-    def connect(self, proc):
-        """Wait for ffmpeg to open the pipe; False if it exited first."""
+    def connect(self):
+        """Block until ffmpeg opens the pipe (the caller kills us if it never does)."""
         w = self.w
         ov = w.ConnectNamedPipe(self.handle, overlapped=True)
-        which = w.WaitForMultipleObjects([ov.event, int(proc._handle)], False, w.INFINITE)
-        if which != w.WAIT_OBJECT_0:
-            ov.cancel()
-            return False
+        w.WaitForMultipleObjects([ov.event], False, w.INFINITE)
         ov.GetOverlappedResult(True)
-        return True
 
     def readinto(self, view):
         w = self.w
@@ -77,7 +72,27 @@ class NamedPipe:
         self.w.CloseHandle(self.handle)
 
 
-def stream(spec):
+class Fifo:
+    def __init__(self, path):
+        if os.path.exists(path):
+            os.unlink(path)
+        os.mkfifo(path)
+        self.path = path
+        self.file = None
+
+    def connect(self):
+        self.file = open(self.path, "rb", buffering=0)  # blocks until ffmpeg opens it
+
+    def readinto(self, view):
+        return self.file.readinto(view)
+
+    def close(self):
+        if self.file:
+            self.file.close()
+        os.unlink(self.path)
+
+
+def serve(spec):
     import OpenEXR
 
     w, h, c = spec["width"], spec["height"], spec["channels"]
@@ -89,17 +104,9 @@ def stream(spec):
         header["dwaCompressionLevel"] = float(spec["level"])
     key = "RGBA" if c == 4 else "RGB"
 
-    args = list(spec["ffmpeg"])
-    pipe = None
-    if os.name == "nt" and args[-1] == "pipe:1":
-        pipe = NamedPipe()
-        args[-1:] = ["-y", pipe.name]
-    proc = subprocess.Popen(args, stdout=None if pipe else subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-    errors = []
-    threading.Thread(target=lambda: errors.append(proc.stderr.read().decode(errors="replace")), daemon=True).start()
-    source = proc.stdout
-    if pipe:
-        source = pipe if pipe.connect(proc) else None
+    source = NamedPipe(spec["pipe"]) if os.name == "nt" else Fifo(spec["pipe"])
+    print("ready", flush=True)
+    source.connect()
 
     lock = threading.Lock()
     done = [0]
@@ -119,34 +126,29 @@ def stream(spec):
             with lock:
                 done[0] += 1
                 print(f"done {done[0]}", flush=True)
-        except Exception as err:  # reported after the pipe is drained
+        except Exception as err:  # reported once the pipe is drained
             failure.append(err)
         finally:
             slots.release()
 
     size = w * h * c * 4
     index = 0
-    with ThreadPoolExecutor(max_workers=spec["threads"]) as pool:
-        while source and not failure:
-            slots.acquire()
-            frame = bytearray(size)
-            if read_exact(source, frame) < size:
-                slots.release()
-                break
-            pool.submit(write, index, frame)
-            index += 1
-    if failure:
-        proc.kill()
-    code = proc.wait()
-    if pipe:
-        pipe.close()
+    try:
+        with ThreadPoolExecutor(max_workers=spec["threads"]) as pool:
+            while not failure:
+                slots.acquire()
+                frame = bytearray(size)
+                if read_exact(source, frame) < size:
+                    slots.release()
+                    break
+                pool.submit(write, index, frame)
+                index += 1
+    finally:
+        source.close()
     if failure:
         raise failure[0]
-    if code != 0 or source is None:
-        sys.stderr.write("".join(errors).strip() or f"ffmpeg exited with {code}")
-        return 1
-    if "frames" in spec and done[0] != spec["frames"]:
-        sys.stderr.write(f"expected {spec['frames']} frames, wrote {done[0]}")
+    if done[0] != spec["frames"]:
+        sys.stderr.write(f"expected {spec['frames']} frames, got {done[0]}")
         return 1
     return 0
 
@@ -157,8 +159,8 @@ def main(argv):
 
         print("ok")
         return 0
-    if argv[:1] == ["--stream"]:
-        return stream(json.loads(argv[1]))
+    if argv[:1] == ["--serve"]:
+        return serve(json.loads(argv[1]))
     sys.stderr.write(__doc__)
     return 2
 

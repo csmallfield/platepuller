@@ -144,6 +144,9 @@ light, without clipping.
 
 ## What it does with each clip
 
+- **One decode per clip.** Each clip is read and decoded once, then fed to every output, each on
+  its own thread. This matters when the source media is on a hard drive. `--jobs` (**Clips at once**
+  in the app) sets how many clips run in parallel. All outputs of a clip succeed or fail together.
 - **Handles** are added before and after each clip, up to `--handles` frames (default 12). Near the
   start or end of the source they get shorter; the console and the CSV show where this happened.
 - **Frame rate** stays at the source's nominal rate (24 → 24). Output files are constant frame rate.

@@ -13,7 +13,7 @@ import { framesAtRate } from '../src/probe.js';
 import { appleLogToLinear, appleLogToRec709, buildLinear1D } from '../src/applelog.js';
 import { conversionMatrix } from '../src/colormath.js';
 import { normalizeOutput, BUILTIN_PRESETS } from '../src/publish.js';
-import { imageFilters, ffmpegArgs } from '../src/encode.js';
+import { imageFilters, clipArgs } from '../src/encode.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = fs.readFileSync(path.join(here, 'fixture.xml'), 'utf8');
@@ -180,22 +180,31 @@ test('float outputs never go through swscale after linearising', () => {
   assert.equal(f[f.length - 1], 'format=gbrapf32le');
 });
 
-test('DWAA / DWAB / PIZ: ffmpeg streams raw float frames to OpenEXR, never to disk', () => {
-  const job = {
-    preset: BUILTIN_PRESETS.exr16,
-    output: { exrCompression: 'dwaa', alpha: false },
-    probe: { width: 64, height: 36, colorSpace: 'bt2020nc', firstTime: 0, timeBase: { num: 1, den: 600 }, samples: [] },
+test('one ffmpeg run per clip: decode once, split to every output', () => {
+  const base = {
+    probe: { width: 64, height: 36, colorSpace: 'bt2020nc', firstTime: 0, timeBase: { num: 1, den: 600 }, samples: [], audio: { channels: 2 } },
     size: { width: 64, height: 36 },
-    clip: { file: { path: 'in.mov', rate: { timebase: 24, ntsc: false } }, rate: { timebase: 24, ntsc: false } },
-    range: { start: 0, frames: 10 },
-    seq: { start: 1001 },
+    clip: { name: '1A', file: { path: 'in.mov', rate: { timebase: 24, ntsc: false } }, rate: { timebase: 24, ntsc: false } },
+    range: { start: 0, end: 10, frames: 10 },
   };
-  const piped = ffmpegArgs(job, {}, 'pipe:1');
-  assert.deepEqual(piped.slice(-3), ['-f', 'rawvideo', 'pipe:1']);
-  assert.ok(!piped.includes('-progress'), 'stdout carries frames, not progress');
-  assert.ok(!piped.includes('exr'), 'no ffmpeg EXR encoder');
-  job.output.exrCompression = 'zip1';
-  const zip = ffmpegArgs(job, {}, 'out.%04d.exr');
-  assert.equal(zip[zip.indexOf('-compression') + 1], 'zip1');
-  assert.equal(zip[zip.indexOf('-start_number') + 1], '1001');
+  const jobs = [
+    { ...base, preset: BUILTIN_PRESETS.exr16, output: { exrCompression: 'dwaa' }, seq: { start: 1001 } },
+    { ...base, preset: BUILTIN_PRESETS.exr16, output: { exrCompression: 'zip1' }, seq: { start: 1001 } },
+    { ...base, preset: BUILTIN_PRESETS.prores422hq, output: {}, size: { width: 32, height: 18 } },
+  ];
+  const args = clipArgs(jobs, ['PIPE', 'seq.%04d.exr', 'movie.mov']);
+  assert.equal(args.filter((a) => a === '-i').length, 1, 'the source is opened once');
+  const graphs = args.flatMap((a, i) => (args[i - 1] === '-filter_complex' ? [a] : []));
+  assert.equal(graphs.length, 4, 'one graph per output, plus audio');
+  assert.ok(graphs[3].includes('asplit=1[a2]'), 'audio only for the movie');
+  assert.match(graphs[2], /scale=32:18.*\[v2\]$/, 'each output has its own size');
+  const after = (target) => args.slice(0, args.indexOf(target) + 1);
+  // DWAA: raw float frames to the OpenEXR helper's pipe, no ffmpeg EXR encoder
+  assert.deepEqual(args.slice(args.indexOf('PIPE') - 2, args.indexOf('PIPE') + 1), ['-f', 'rawvideo', 'PIPE']);
+  const zipArgs = args.slice(args.indexOf('PIPE') + 1, args.indexOf('seq.%04d.exr') + 1);
+  assert.equal(zipArgs[zipArgs.indexOf('-compression') + 1], 'zip1');
+  assert.equal(zipArgs[zipArgs.indexOf('-start_number') + 1], '1001');
+  const movArgs = args.slice(args.indexOf('seq.%04d.exr') + 1);
+  assert.ok(movArgs.includes('[a2]') && movArgs.includes('-timecode'));
+  assert.ok(after('PIPE').includes('-progress'));
 });

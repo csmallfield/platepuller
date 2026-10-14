@@ -1,9 +1,9 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { framesToTimecode } from './xmeml.js';
 import os from 'node:os';
-import { OPENEXR_COMPRESSION, streamExrSequence } from './openexr.js';
+import { framesToTimecode } from './xmeml.js';
+import { OPENEXR_COMPRESSION, serveExrSequence } from './openexr.js';
 
 // Compression threads per OpenEXR sequence; several encodes may run at once.
 const EXR_THREADS = Math.max(2, Math.min(8, Math.floor(os.cpus().length / 3)));
@@ -118,48 +118,58 @@ export function imageFilters(job, color) {
   return f;
 }
 
-/** ffmpeg arguments for one job. `outPath` is the movie file, or the frame pattern for a sequence. */
-export function ffmpegArgs(job, { color = { mode: 'none' }, frameMatch = 'nearest' } = {}, outPath = job.outPath) {
-  const { probe, range, preset, clip, output } = job;
-  const sel = selectionFilters(job, frameMatch);
-  const toPipe = outPath === 'pipe:1';
-  const input = [
-    '-hide_banner', '-nostdin', '-loglevel', 'error',
-    ...(toPipe ? [] : ['-progress', 'pipe:1']), // stdout carries the frames when piping
-    '-y', '-copyts', '-ss', t6(sel.seek), '-i', clip.file.path,
-  ];
-  const vf = [...sel.video, ...imageFilters(job, color)].join(',');
+/** True for EXR outputs that OpenEXR (not ffmpeg) compresses: ffmpeg sends them raw frames. */
+export const viaOpenEXR = (job) => job.preset.ext === 'exr' && OPENEXR_COMPRESSION.has(job.output.exrCompression);
 
+/** Output options for one output of a clip's ffmpeg run; `i` is its index in the filtergraph. */
+function outputArgs(job, i, target, withAudio, rate) {
+  const { preset, range, clip, output } = job;
+  const common = ['-map', `[v${i}]`, '-frames:v', String(range.frames), '-map_metadata', '-1'];
+  // raw planar float frames for OpenEXR to compress (DWAA/DWAB/PIZ)
+  if (viaOpenEXR(job)) return [...common, '-f', 'rawvideo', target];
   if (preset.kind === 'sequence') {
-    const head = [...input, '-map', '0:v:0', '-vf', vf, '-frames:v', String(range.frames), '-an', '-map_metadata', '-1'];
-    // raw planar float frames for OpenEXR to compress (DWAA/DWAB/PIZ)
-    if (toPipe) return [...head, '-f', 'rawvideo', 'pipe:1'];
     return [
-      ...head,
+      ...common,
       ...preset.video,
       ...(preset.ext === 'exr' ? ['-compression', output.exrCompression ?? 'zip16'] : []),
       '-f', 'image2', '-start_number', String(job.seq.start),
-      outPath,
+      target,
     ];
   }
-
   const tcFrame = (clip.file.timecodeFrame ?? 0) + range.start;
   return [
-    ...input,
-    '-map', '0:v:0',
-    ...(probe.audio ? ['-map', '0:a:0'] : []),
-    '-vf', vf,
-    ...(probe.audio ? ['-af', sel.audio.join(',')] : []),
-    '-frames:v', String(range.frames),
-    '-r', fpsExpr(sel.rate),
+    ...common,
+    ...(withAudio ? ['-map', `[a${i}]`] : []),
+    '-r', fpsExpr(rate),
     ...preset.video,
-    ...(probe.audio ? preset.audio : ['-an']),
+    ...(withAudio ? preset.audio : []),
     ...(preset.extra ?? []),
-    '-map_metadata', '-1',
     '-map_chapters', '-1',
-    '-timecode', framesToTimecode(tcFrame, sel.rate, clip.file.dropFrame),
+    '-timecode', framesToTimecode(tcFrame, rate, clip.file.dropFrame),
     '-metadata', `comment=platepuller source=${path.basename(clip.file.path)} frames=${range.start}-${range.end - 1} clip=${clip.name}`,
-    outPath,
+    target,
+  ];
+}
+
+/**
+ * One ffmpeg run for every output of a clip: the source is read, decoded and frame-selected
+ * once, then split to each output's colour / resize / encoder chain.
+ * `jobs` all belong to the same clip; `targets[i]` is where output i goes (file, frame
+ * pattern or pipe); `colors[i]` comes from colorResources().
+ */
+export function clipArgs(jobs, targets, { colors = [], frameMatch = 'nearest' } = {}) {
+  const { probe, clip } = jobs[0];
+  const sel = selectionFilters(jobs[0], frameMatch);
+  // One filtergraph per output, all fed by the same decoded stream: ffmpeg runs each graph on
+  // its own thread, where a single graph with split would run every chain on one thread.
+  const graphs = jobs.map((j, i) => `[0:v]${[...sel.video, ...imageFilters(j, colors[i] ?? { mode: 'none' })].join(',')}[v${i}]`);
+  const audio = jobs.map((j, i) => (j.preset.kind === 'movie' && probe.audio ? i : -1)).filter((i) => i >= 0);
+  if (audio.length) graphs.push(`[0:a]${sel.audio.join(',')},asplit=${audio.length}${audio.map((i) => `[a${i}]`).join('')}`);
+  return [
+    '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1',
+    '-y', '-copyts', '-ss', t6(sel.seek), '-i', clip.file.path,
+    ...graphs.flatMap((g) => ['-filter_complex', g]),
+    ...jobs.flatMap((j, i) => outputArgs(j, i, targets[i], audio.includes(i), sel.rate)),
   ];
 }
 
@@ -212,43 +222,62 @@ export function outputExists(job) {
 // A killed ffmpeg can hold files for a moment on Windows, hence the retries.
 const rm = (p) => fs.rmSync(p, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 
-/**
- * Encode one job. Everything is written next to the target first (file.partial.mov or
- * folder.partial/) and only moved into place once ffmpeg has succeeded.
- */
-export async function encodeJob(job, opts) {
-  if (job.seq) return encodeSequence(job, opts);
-  fs.mkdirSync(path.dirname(job.outPath), { recursive: true });
-  const tmp = job.outPath.replace(/(\.[^.]+)$/, '.partial$1');
-  try {
-    await runFfmpeg(ffmpegArgs(job, opts, tmp), opts);
-    fs.renameSync(tmp, job.outPath);
-  } catch (err) {
-    rm(tmp);
-    throw err;
-  }
-}
+let pipeCounter = 0;
 
-async function encodeSequence(job, opts) {
-  const seq = job.seq;
-  const tmp = `${seq.dir}.partial`;
+/** Where a job is written while encoding: next to its target, moved into place on success. */
+function staging(job) {
+  if (!job.seq) {
+    fs.mkdirSync(path.dirname(job.outPath), { recursive: true });
+    const tmp = job.outPath.replace(/(\.[^.]+)$/, '.partial$1');
+    return { tmp, target: tmp };
+  }
+  const tmp = `${job.seq.dir}.partial`;
   rm(tmp);
   fs.mkdirSync(tmp, { recursive: true });
+  if (viaOpenEXR(job)) {
+    const target =
+      process.platform === 'win32' ? `\\\\.\\pipe\\platepuller-${process.pid}-${++pipeCounter}` : path.join(tmp, '.frames.fifo');
+    return { tmp, target };
+  }
   // The image2 muxer expands % anywhere in the path, so literal % signs are doubled.
-  const pattern = path.join(tmp, seq.name).replace(/%/g, '%%') + `.%0${seq.pad}d.${seq.ext}`;
+  return { tmp, target: path.join(tmp, job.seq.name).replace(/%/g, '%%') + `.%0${job.seq.pad}d.${job.seq.ext}` };
+}
+
+function publishStaged(job, tmp) {
+  if (!job.seq) return fs.renameSync(tmp, job.outPath);
+  const seq = job.seq;
+  fs.mkdirSync(seq.dir, { recursive: true });
+  for (const f of sequenceFrames(seq)) fs.rmSync(path.join(seq.dir, f)); // frames of an earlier version
+  for (const f of fs.readdirSync(tmp)) if (!f.startsWith('.')) fs.renameSync(path.join(tmp, f), path.join(seq.dir, f));
+  rm(tmp);
+}
+
+/**
+ * Encode every output of one clip with a single ffmpeg run (see clipArgs).
+ * opts: { colors (per job), frameMatch, signal, onProgress(job, framesDone) }.
+ * All outputs succeed or fail together; nothing is moved into place unless all succeeded.
+ */
+export async function encodeClip(jobs, opts = {}) {
+  const staged = jobs.map(staging);
+  const helpers = [];
+  const controller = new AbortController();
+  const stop = () => controller.abort();
+  opts.signal?.addEventListener('abort', stop, { once: true });
   try {
-    if (seq.ext === 'exr' && OPENEXR_COMPRESSION.has(job.output.exrCompression)) {
-      // ffmpeg -> pipe -> OpenEXR: no uncompressed frames ever touch the disk
-      await streamExrSequence(
+    // Start the OpenEXR writers first: they create the pipes ffmpeg writes to.
+    jobs.forEach((job, i) => {
+      if (!viaOpenEXR(job)) return;
+      const seq = job.seq;
+      const helper = serveExrSequence(
         {
-          ffmpeg: [opts.ffmpeg ?? 'ffmpeg', ...ffmpegArgs(job, opts, 'pipe:1')],
+          pipe: staged[i].target,
           width: job.size.width,
           height: job.size.height,
           channels: job.output.alpha ? 4 : 3,
           half: job.preset.video.includes('half'),
           compression: job.output.exrCompression,
           level: job.output.dwaLevel ?? 45,
-          dir: tmp,
+          dir: staged[i].tmp,
           name: seq.name,
           ext: seq.ext,
           start: seq.start,
@@ -256,17 +285,33 @@ async function encodeSequence(job, opts) {
           frames: job.range.frames,
           threads: EXR_THREADS,
         },
-        opts,
+        { signal: controller.signal, onProgress: (n) => opts.onProgress?.(job, n) },
       );
-    } else {
-      await runFfmpeg(ffmpegArgs(job, opts, pattern), opts);
-    }
-    fs.mkdirSync(seq.dir, { recursive: true });
-    for (const f of sequenceFrames(seq)) fs.rmSync(path.join(seq.dir, f)); // frames of an earlier version
-    for (const f of fs.readdirSync(tmp)) fs.renameSync(path.join(tmp, f), path.join(seq.dir, f));
-    rm(tmp);
+      helpers.push(helper.done);
+      helper.done.catch(stop); // a failed writer stops ffmpeg instead of leaving it blocked
+      staged[i].ready = helper.ready;
+    });
+    await Promise.all(staged.map((s) => s.ready).filter(Boolean));
+
+    const args = clipArgs(jobs, staged.map((s) => s.target), opts);
+    const ffmpegRun = runFfmpeg(args, {
+      ...opts,
+      signal: controller.signal,
+      onProgress: (frame) => jobs.forEach((job) => !viaOpenEXR(job) && opts.onProgress?.(job, frame)),
+    });
+    ffmpegRun.catch(stop); // ffmpeg failed: the writers will never get their frames
+    // Wait for every process to exit before touching the staging folders, and report the
+    // real failure rather than the 'cancelled' of the processes stopped because of it.
+    const results = await Promise.allSettled([ffmpegRun, ...helpers]);
+    const failures = results.filter((r) => r.status === 'rejected').map((r) => r.reason);
+    if (failures.length) throw failures.find((e) => e.message !== 'cancelled') ?? failures[0];
+    jobs.forEach((job, i) => publishStaged(job, staged[i].tmp));
   } catch (err) {
-    rm(tmp);
-    throw err;
+    stop(); // e.g. a writer died before it was ready: stop the rest and let them exit first
+    await Promise.allSettled(helpers);
+    for (const s of staged) rm(s.tmp);
+    throw opts.signal?.aborted ? new Error('cancelled') : err;
+  } finally {
+    opts.signal?.removeEventListener('abort', stop);
   }
 }

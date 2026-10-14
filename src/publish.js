@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { parseXmeml, readVideoClips, writeProcessedXml } from './xmeml.js';
 import { probeSource } from './probe.js';
 import { buildJobs, findCollisions } from './plan.js';
-import { encodeJob, outputExists, FRAME_MATCH } from './encode.js';
+import { encodeClip, outputExists, FRAME_MATCH } from './encode.js';
 import { validateTemplate } from './template.js';
 import { writeBuiltinLut, writeLinearLut } from './applelog.js';
 import { conversionMatrix } from './colormath.js';
@@ -270,28 +270,41 @@ export async function runPublish(prepared, { onEvent = () => {}, signal } = {}) 
   const todo = jobs.filter((j) => j.status === 'todo');
   onEvent({ type: 'start', total: todo.length, out });
 
+  // One ffmpeg run per clip covers all of that clip's outputs: the source is read and
+  // decoded once instead of once per output. `jobs` (parallel encodes) counts clips.
+  const byClip = new Map();
+  for (const j of todo) {
+    if (!byClip.has(j.index)) byClip.set(j.index, []);
+    byClip.get(j.index).push(j);
+  }
+
   let done = 0;
   await pool(
-    todo,
+    [...byClip.values()],
     s.jobs,
-    async (j) => {
+    async (group) => {
       const t0 = Date.now();
-      j.status = 'running';
-      onEvent({ type: 'job-start', id: j.id });
+      for (const j of group) {
+        j.status = 'running';
+        onEvent({ type: 'job-start', id: j.id });
+      }
+      let error = null;
       try {
-        await encodeJob(j, {
-          color: colors[j.output.index],
+        await encodeClip(group, {
+          colors: group.map((j) => colors[j.output.index]),
           frameMatch: s.frameMatch,
           signal,
-          onProgress: (frame) => onEvent({ type: 'job-progress', id: j.id, frame, frames: j.range.frames }),
+          onProgress: (j, frame) => onEvent({ type: 'job-progress', id: j.id, frame, frames: j.range.frames }),
         });
-        j.status = 'ok';
       } catch (err) {
-        j.status = signal?.aborted ? 'cancelled' : 'failed';
-        if (j.status === 'failed') j.error = err.message.split('\n')[0];
+        error = err;
       }
-      done++;
-      onEvent({ type: 'job-done', id: j.id, status: j.status, error: j.error, seconds: (Date.now() - t0) / 1000, done, total: todo.length });
+      for (const j of group) {
+        j.status = !error ? 'ok' : signal?.aborted ? 'cancelled' : 'failed';
+        if (j.status === 'failed') j.error = error.message.split('\n')[0];
+        done++;
+        onEvent({ type: 'job-done', id: j.id, status: j.status, error: j.error, seconds: (Date.now() - t0) / 1000, done, total: todo.length });
+      }
     },
     signal,
   );
