@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { readVideoIndex } from './movindex.js';
 
 const run = promisify(execFile);
 const cache = new Map();
@@ -16,20 +17,14 @@ export function probeSource(file, ffprobe = 'ffprobe') {
   return cache.get(file);
 }
 
-async function doProbe(file, ffprobe) {
-  const opts = { maxBuffer: 512 * 1024 * 1024 };
-  const { stdout: info } = await run(
+/** Every video packet via ffprobe. Exact for any format, but reads the whole file. */
+export async function probePackets(file, ffprobe = 'ffprobe') {
+  const { stdout } = await run(
     ffprobe,
-    ['-v', 'error', '-show_entries', 'stream=index,codec_type,codec_name,width,height,time_base,r_frame_rate,sample_rate,channels,color_space,color_primaries,color_transfer', '-of', 'json', file],
-    opts,
+    ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts,duration', '-of', 'csv=p=0', file],
+    { maxBuffer: 512 * 1024 * 1024 },
   );
-  const meta = JSON.parse(info);
-  const video = meta.streams.find((s) => s.codec_type === 'video');
-  if (!video) throw new Error(`No video stream in ${file}`);
-  const audio = meta.streams.find((s) => s.codec_type === 'audio') ?? null;
-
-  const { stdout: pk } = await run(ffprobe, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts,duration', '-of', 'csv=p=0', file], opts);
-  const samples = pk
+  return stdout
     .split(/\r?\n/)
     .filter(Boolean)
     .map((l) => {
@@ -38,8 +33,25 @@ async function doProbe(file, ffprobe) {
     })
     .filter((p) => Number.isFinite(p.pts))
     .sort((a, b) => a.pts - b.pts);
+}
 
+async function doProbe(file, ffprobe) {
+  const { stdout: info } = await run(ffprobe, [
+    '-v', 'error',
+    '-show_entries', 'stream=index,codec_type,codec_name,width,height,time_base,r_frame_rate,sample_rate,channels,color_space,color_primaries,color_transfer',
+    '-of', 'json', file,
+  ]);
+  const meta = JSON.parse(info);
+  const video = meta.streams.find((s) => s.codec_type === 'video');
+  if (!video) throw new Error(`No video stream in ${file}`);
+  const audio = meta.streams.find((s) => s.codec_type === 'audio') ?? null;
   const [tbNum, tbDen] = video.time_base.split('/').map(Number);
+
+  // Read timestamps from the container's sample table when we can; it is a few KB
+  // instead of the whole file.
+  const index = readVideoIndex(file);
+  const samples = index && index.timeBase.den * tbNum === tbDen ? index.samples : await probePackets(file, ffprobe);
+
   const sec = (ticks) => (ticks * tbNum) / tbDen;
   const last = samples[samples.length - 1];
   return {
