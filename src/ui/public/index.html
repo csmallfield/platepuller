@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="platepuller-token" content="__TOKEN__">
+<title>platepuller</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="icon.svg" alt="" width="28" height="28">
+    <div>
+      <h1>platepuller</h1>
+      <p>Plate pulls from Premiere edits</p>
+    </div>
+  </div>
+  <span class="version" id="version"></span>
+</header>
+
+<main>
+  <section class="panel" id="sec-edit">
+    <h2><span class="num">1</span>Edit</h2>
+    <p class="hint">In Premiere: select the sequence, then File › Export › Final Cut Pro XML.</p>
+    <div class="row">
+      <input type="text" id="xml" class="path" placeholder="Path to the exported .xml" spellcheck="false" autocomplete="off">
+      <button type="button" class="btn" data-pick="xml" data-target="xml">Browse…</button>
+    </div>
+    <div id="edit-summary" class="summary" hidden></div>
+    <div class="table-wrap" id="clips-wrap" hidden>
+      <table class="clips">
+        <thead><tr><th>Shot</th><th>Clip</th><th>Source</th><th class="r">Source in</th><th class="r">Source out</th><th class="r">Frames</th><th class="r">Handles</th><th>Notes</th></tr></thead>
+        <tbody id="clips"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="sec-dest">
+    <h2><span class="num">2</span>Destination</h2>
+    <div class="row">
+      <input type="text" id="out" class="path" placeholder="Default: a “publish” folder next to the XML" spellcheck="false" autocomplete="off">
+      <button type="button" class="btn" data-pick="folder" data-target="out">Browse…</button>
+    </div>
+    <div class="field-inline">
+      <span class="label">If a file already exists</span>
+      <div class="segmented" role="radiogroup" aria-label="If a file already exists">
+        <label><input type="radio" name="existing" value="stop"><span>Stop</span></label>
+        <label><input type="radio" name="existing" value="overwrite"><span>Overwrite</span></label>
+        <label><input type="radio" name="existing" value="skip"><span>Keep &amp; skip</span></label>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="sec-naming">
+    <h2><span class="num">3</span>Naming</h2>
+    <label class="label" for="template">Folders and file name <span class="muted">— use / for folders; the extension comes from the format</span></label>
+    <input type="text" id="template" class="path mono" spellcheck="false" autocomplete="off">
+    <div class="chips" id="chips" aria-label="Insert a variable"></div>
+    <div class="grid3">
+      <label class="field"><span class="label">{version}</span><input type="text" id="version-input" autocomplete="off"></label>
+      <label class="field"><span class="label">{string}</span><input type="text" id="string" placeholder="optional" autocomplete="off"></label>
+      <label class="field"><span class="label">Handles (frames)</span><input type="number" id="handles" min="0" step="1"></label>
+    </div>
+    <div class="examples" id="examples"></div>
+  </section>
+
+  <section class="panel" id="sec-outputs">
+    <h2><span class="num">4</span>Outputs</h2>
+    <p class="hint">Each output is one file per clip. Add more to publish several formats in one go.</p>
+    <div id="outputs" class="outputs"></div>
+    <button type="button" class="add-output" id="add-output"><span aria-hidden="true">+</span> Add output</button>
+  </section>
+
+  <details class="panel advanced">
+    <summary>Advanced</summary>
+    <div class="grid3">
+      <label class="field"><span class="label">Frame matching</span><select id="frameMatch"></select></label>
+      <label class="field"><span class="label">Parallel encodes</span><input type="number" id="jobs" min="1" max="16" step="1"></label>
+      <label class="check"><input type="checkbox" id="includeDisabled"> Include clips disabled on the timeline</label>
+    </div>
+    <p class="hint" id="frameMatch-hint"></p>
+  </details>
+
+  <section class="panel" id="sec-progress" hidden>
+    <h2>Progress</h2>
+    <div class="overall"><div class="bar"><div id="overall-bar"></div></div><span id="overall-text"></span></div>
+    <div class="table-wrap">
+      <table class="progress">
+        <thead><tr><th>Shot</th><th>Clip</th><th>Output</th><th>File</th><th class="w-bar">Progress</th><th>Status</th></tr></thead>
+        <tbody id="progress"></tbody>
+      </table>
+    </div>
+    <div id="results" class="results"></div>
+  </section>
+</main>
+
+<footer class="bar-bottom">
+  <div class="status-area">
+    <div id="plan-status" class="plan-status"></div>
+    <ul id="errors" class="errors"></ul>
+  </div>
+  <div class="actions">
+    <button type="button" class="btn ghost" id="cancel" hidden>Cancel</button>
+    <button type="button" class="btn primary" id="publish" disabled>Publish</button>
+  </div>
+</footer>
+
+<template id="output-tpl">
+  <div class="output">
+    <div class="output-head">
+      <span class="output-title"></span>
+      <div class="output-tools">
+        <button type="button" class="icon-btn" data-act="dup" title="Duplicate output" aria-label="Duplicate output">⧉</button>
+        <button type="button" class="icon-btn" data-act="remove" title="Remove output" aria-label="Remove output">✕</button>
+      </div>
+    </div>
+    <div class="grid2">
+      <label class="field"><span class="label">Format</span><select data-k="preset"></select></label>
+      <label class="field"><span class="label">Colour</span><select data-k="color"></select></label>
+    </div>
+    <p class="preset-desc"></p>
+    <div class="grid2">
+      <label class="field" data-show="applelog-rec709"><span class="label">Exposure <span class="muted">(higher is brighter)</span></span><input type="number" data-k="exposure" min="0.05" max="4" step="0.05"></label>
+      <div class="field" data-show="lut">
+        <span class="label">LUT file</span>
+        <div class="row"><input type="text" data-k="lut" class="path" placeholder="Path to a .cube LUT" spellcheck="false"><button type="button" class="btn" data-act="pick-lut">Browse…</button></div>
+      </div>
+      <label class="field"><span class="label">{colorSpace} label</span><input type="text" data-k="colorSpace" autocomplete="off"></label>
+    </div>
+  </div>
+</template>
+
+<script src="app.js"></script>
+</body>
+</html>

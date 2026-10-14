@@ -35,6 +35,10 @@ export function validateTemplate(template) {
   if (unknown.length) {
     throw new Error(`Unknown template variable(s): ${unknown.join(', ')}. Available: ${Object.keys(VARIABLES).join(', ')}`);
   }
+  if (/[{}<>]/.test(template.replace(TOKEN, ''))) {
+    throw new Error('The naming template has an unclosed variable: write variables as {name}.');
+  }
+  if (!template.replace(/[\\/\s]/g, '')) throw new Error('The naming template is empty.');
 }
 
 /** Returns path segments (directories + file stem). */

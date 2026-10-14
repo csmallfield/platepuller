@@ -20,7 +20,26 @@ winget install Gyan.FFmpeg
 npm install
 ```
 
-## Usage
+## The app
+
+On Windows, double-click **`platepuller.cmd`**. On any system, you can run `npm run ui` instead.
+Either one starts a small local server and opens platepuller in your browser. Closing the console
+window stops it.
+
+1. **Edit**: browse to the XML exported from Premiere. The clip list shows each clip's source range
+   and handles, and flags any problems.
+2. **Destination**: choose the output folder (by default, `publish` next to the XML) and what to do
+   if a file already exists.
+3. **Naming**: the folder and file-name template. Click a variable chip to insert it. Example
+   names for the first clip update as you type.
+4. **Outputs**: for each output, pick a format, a colour conversion and a `{colorSpace}` label.
+   **+ Add output** publishes several formats in one run.
+
+Click **Publish** to watch progress per file, cancel if needed, and open the results in Explorer.
+The app remembers your last settings. It only listens on `127.0.0.1` and accepts requests from
+its own page.
+
+## Command line
 
 ```bash
 node src/cli.js edit.xml

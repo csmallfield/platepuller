@@ -7,7 +7,8 @@
     "platepuller": "src/cli.js"
   },
   "scripts": {
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "ui": "node src/ui/server.js --open"
   },
   "engines": {
     "node": ">=20"

@@ -53,16 +53,18 @@ test('templates', () => {
     'edit_v1', '1A', '1A_LOG_v001_h264',
   ]);
   assert.throws(() => validateTemplate('{clipname}'), /Unknown template variable/);
+  assert.throws(() => validateTemplate('{clipName}/{versi'), /unclosed variable/);
+  assert.throws(() => validateTemplate(' / '), /empty/);
 });
 
 test('template collisions are reported', () => {
   const edit = readVideoClips(parseXmeml(fixture));
   const probes = new Map();
   const presets = { h264: { ext: 'mp4' } };
-  const opts = { handles: 12, template: '{sourceFilename}_{preset}', out: 'out', colorSpace: 'LOG', version: 'v1', string: '' };
-  const jobs = buildJobs({ edit, probes, presets, presetNames: ['h264'], opts, editSource: 'edit_v1' });
+  const opts = { handles: 12, template: '{sourceFilename}_{preset}', out: 'out', version: 'v1', string: '' };
+  const jobs = buildJobs({ edit, probes, presets, outputs: [{ preset: 'h264', colorSpace: 'LOG', index: 0 }], opts, editSource: 'edit_v1' });
   assert.equal(findCollisions(jobs).length, 1);
-  const unique = buildJobs({ edit, probes, presets, presetNames: ['h264'], opts: { ...opts, template: '{shot}_{sourceFilename}_{preset}' }, editSource: 'edit_v1' });
+  const unique = buildJobs({ edit, probes, presets, outputs: [{ preset: 'h264', colorSpace: 'LOG', index: 0 }], opts: { ...opts, template: '{shot}_{sourceFilename}_{preset}' }, editSource: 'edit_v1' });
   assert.equal(findCollisions(unique).length, 0);
 });
 

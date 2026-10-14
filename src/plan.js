@@ -21,7 +21,11 @@ export function shotNumber(index, step = 10, width = 3) {
   return String((index + 1) * step).padStart(width, '0');
 }
 
-export function buildJobs({ edit, probes, presets, presetNames, opts, editSource }) {
+/**
+ * One job per clip per output. `outputs` are { preset, colorSpace, index, ... };
+ * `opts` carries template, out, handles, version, string.
+ */
+export function buildJobs({ edit, probes, presets, outputs, opts, editSource }) {
   const jobs = [];
   edit.clips.forEach((clip, index) => {
     const probe = probes.get(clip.file.path);
@@ -37,14 +41,15 @@ export function buildJobs({ edit, probes, presets, presetNames, opts, editSource
     if (clip.effects.length) warnings.push(`timeline effects not baked in: ${clip.effects.join(', ')}`);
     if (clip.end - clip.start !== clip.out - clip.in) warnings.push('speed change on timeline is not applied');
 
-    for (const presetName of presetNames) {
+    for (const output of outputs) {
+      const presetName = output.preset;
       const preset = presets[presetName];
       const vars = {
         clipName: clip.name,
         sourceFilename: path.parse(clip.file.name ?? clip.file.path).name,
         take: path.parse(clip.file.name ?? clip.file.path).name,
         shot: shotNumber(index),
-        colorSpace: opts.colorSpace,
+        colorSpace: output.colorSpace,
         version: opts.version,
         compressionPreset: presetName,
         preset: presetName,
@@ -56,7 +61,7 @@ export function buildJobs({ edit, probes, presets, presetNames, opts, editSource
       };
       const segments = renderTemplate(opts.template, vars);
       const outPath = path.join(opts.out, ...segments) + '.' + preset.ext;
-      jobs.push({ clip, index, shot: vars.shot, presetName, preset, range, probe, outPath, warnings });
+      jobs.push({ clip, index, shot: vars.shot, output, presetName, preset, range, probe, outPath, warnings });
     }
   });
   return jobs;

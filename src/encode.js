@@ -95,9 +95,10 @@ export function ffmpegArgs(job, { lut, colorSpaceOut, frameMatch = 'nearest' }) 
   ];
 }
 
-export function runFfmpeg(args, { ffmpeg = 'ffmpeg', onProgress } = {}) {
+export function runFfmpeg(args, { ffmpeg = 'ffmpeg', onProgress, signal } = {}) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(ffmpeg, args, { windowsHide: true });
+    if (signal?.aborted) return reject(new Error('cancelled'));
+    const proc = spawn(ffmpeg, args, { windowsHide: true, signal });
     let stderr = '';
     let buf = '';
     proc.stdout.on('data', (d) => {
@@ -111,8 +112,19 @@ export function runFfmpeg(args, { ffmpeg = 'ffmpeg', onProgress } = {}) {
       }
     });
     proc.stderr.on('data', (d) => (stderr += d));
-    proc.on('error', reject);
-    proc.on('close', (code) => (code === 0 ? resolve() : reject(new Error(stderr.trim() || `ffmpeg exited with ${code}`))));
+    // On cancel, 'error' fires as soon as the kill is sent; settle only once ffmpeg has exited
+    // and released the output file. A spawn failure (ffmpeg missing) never gets a 'close'.
+    let failure = null;
+    proc.on('error', (err) => {
+      failure = err;
+      if (proc.pid === undefined) reject(err);
+    });
+    proc.on('close', (code) => {
+      if (signal?.aborted) reject(new Error('cancelled'));
+      else if (failure) reject(failure);
+      else if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `ffmpeg exited with ${code}`));
+    });
   });
 }
 
@@ -123,7 +135,8 @@ export async function encodeJob(job, opts) {
     await runFfmpeg(ffmpegArgs({ ...job, outPath: tmp }, opts), opts);
     fs.renameSync(tmp, job.outPath);
   } catch (err) {
-    fs.rmSync(tmp, { force: true });
+    // a killed ffmpeg can hold the file for a moment on Windows
+    fs.rmSync(tmp, { force: true, maxRetries: 10, retryDelay: 200 });
     throw err;
   }
 }
