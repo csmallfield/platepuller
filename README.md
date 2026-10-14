@@ -20,6 +20,11 @@ winget install Gyan.FFmpeg
 npm install
 ```
 
+Optional: for **DWAA, DWAB and PIZ** EXR compression, which FFmpeg can't write, run
+`npm run setup-exr` once. It needs Python 3 and installs the official OpenEXR package into a private
+`.venv` inside the platepuller folder. `platepuller.cmd` does this for you on first launch if Python
+is installed.
+
 ## The app
 
 On Windows, double-click **`platepuller.cmd`**. On any system, you can run `npm run ui` instead.
@@ -92,7 +97,7 @@ that has no `{clipName}` or `{shot}`), the run stops before encoding anything.
 | `h265_preview_x265` | .mp4 | Same as `h265_preview`, encoded in software. Use it on machines without a suitable NVIDIA GPU (about 2–3× slower) |
 | `jpg` | image sequence | JPEG, 8-bit 4:4:4, high quality |
 | `png8` / `png16` | image sequence | PNG, 8 or 16 bits per channel, alpha optional |
-| `exr16` / `exr32` | image sequence | OpenEXR, half or full float, alpha optional. Compression: ZIP (default), ZIPS, RLE or none |
+| `exr16` / `exr32` | image sequence | OpenEXR, half or full float, alpha optional. Compression: ZIP (default), ZIPS, PIZ, DWAA, DWAB, RLE or none |
 
 Add your own presets with `--presets my-presets.json`, using the same shape as
 [src/presets.json](src/presets.json).
@@ -107,6 +112,12 @@ no audio or timecode, and they aren't relinked in a processed XML.
 
 `--alpha` adds an opaque alpha channel to formats that support one: png8, png16, exr16, exr32 and
 prores4444.
+
+**EXR compression** (`--exr-compression`): FFmpeg writes ZIP, ZIPS and RLE directly. For PIZ,
+DWAA and DWAB, FFmpeg writes the frames uncompressed, then the OpenEXR library recompresses them
+in parallel, keeping every pixel and header attribute. DWAA and DWAB are lossy and much smaller.
+On this project's footage, DWAA came out about 5.5× smaller than ZIP and within 0.2% (median) of
+it. `--dwa-level` sets the DWA level (default 45, higher is smaller). PIZ is lossless.
 
 ### Resolution
 
