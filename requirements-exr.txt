@@ -1,0 +1,3 @@
+# Optional: lets platepuller write DWAA, DWAB and PIZ compressed EXRs (npm run setup-exr)
+OpenEXR>=3.3
+numpy

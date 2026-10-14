@@ -13,7 +13,7 @@ import { framesAtRate } from '../src/probe.js';
 import { appleLogToLinear, appleLogToRec709, buildLinear1D } from '../src/applelog.js';
 import { conversionMatrix } from '../src/colormath.js';
 import { normalizeOutput, BUILTIN_PRESETS } from '../src/publish.js';
-import { imageFilters } from '../src/encode.js';
+import { imageFilters, ffmpegArgs } from '../src/encode.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = fs.readFileSync(path.join(here, 'fixture.xml'), 'utf8');
@@ -178,4 +178,22 @@ test('float outputs never go through swscale after linearising', () => {
   assert.ok(f.slice(lin).every((x) => !x.startsWith('scale=')), 'swscale would clamp values above 1');
   assert.ok(f.some((x) => x.startsWith('zscale=w=1920:h=1080')));
   assert.equal(f[f.length - 1], 'format=gbrapf32le');
+});
+
+test('DWAA / DWAB / PIZ: ffmpeg writes uncompressed EXRs and OpenEXR recompresses them', () => {
+  const job = {
+    preset: BUILTIN_PRESETS.exr16,
+    output: { exrCompression: 'dwaa', alpha: false },
+    probe: { width: 64, height: 36, colorSpace: 'bt2020nc', firstTime: 0, timeBase: { num: 1, den: 600 }, samples: [] },
+    size: { width: 64, height: 36 },
+    clip: { file: { path: 'in.mov', rate: { timebase: 24, ntsc: false } }, rate: { timebase: 24, ntsc: false } },
+    range: { start: 0, frames: 10 },
+    seq: { start: 1001 },
+  };
+  const args = ffmpegArgs(job, {}, 'out.%04d.exr');
+  assert.equal(args[args.indexOf('-compression') + 1], 'none');
+  job.output.exrCompression = 'zip1';
+  const zip = ffmpegArgs(job, {}, 'out.%04d.exr');
+  assert.equal(zip[zip.indexOf('-compression') + 1], 'zip1');
+  assert.equal(zip[zip.indexOf('-start_number') + 1], '1001');
 });

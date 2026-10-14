@@ -8,5 +8,9 @@ if not exist node_modules (
   echo Installing dependencies...
   call npm install --no-audit --no-fund || (pause & exit /b 1)
 )
+if not exist .venv (
+  echo Setting up optional OpenEXR support ^(DWAA/DWAB/PIZ^)...
+  node scripts\setup-exr.js --quiet
+)
 node src\ui\server.js --open %*
 if errorlevel 1 pause

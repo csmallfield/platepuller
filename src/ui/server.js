@@ -12,6 +12,7 @@ import { FRAME_MATCH } from '../encode.js';
 import { VARIABLES } from '../template.js';
 import { COLOR_MODES, DEFAULTS, EXR_COMPRESSION, SCALES, loadPresets, preparePublish, runPublish } from '../publish.js';
 import { pick, reveal, openBrowser } from './dialogs.js';
+import { OPENEXR_COMPRESSION, openexrStatus } from '../openexr.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(here, 'public');
@@ -133,6 +134,7 @@ const API = {
       colorModes: COLOR_MODES,
       scales: SCALES,
       exrCompression: EXR_COMPRESSION,
+      openexr: { ...openexrStatus(), needs: [...OPENEXR_COMPRESSION] },
       variables: VARIABLES,
       defaults: DEFAULTS,
       frameMatch: FRAME_MATCH,

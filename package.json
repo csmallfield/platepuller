@@ -8,7 +8,8 @@
   },
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
-    "ui": "node src/ui/server.js --open"
+    "ui": "node src/ui/server.js --open",
+    "setup-exr": "node scripts/setup-exr.js"
   },
   "engines": {
     "node": ">=20"

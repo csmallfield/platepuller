@@ -177,6 +177,13 @@ function renderOutputs() {
     fill('color', meta.colorModes);
     fill('scale', meta.scales);
     fill('exrCompression', meta.exrCompression);
+    if (!meta.openexr.available) {
+      for (const opt of card.querySelectorAll('[data-k="exrCompression"] option')) {
+        if (!meta.openexr.needs.includes(opt.value)) continue;
+        opt.disabled = true;
+        opt.textContent += ' — needs npm run setup-exr';
+      }
+    }
 
     const refresh = () => {
       const p = meta.presets[o.preset];
@@ -190,6 +197,7 @@ function renderOutputs() {
       for (const f of card.querySelectorAll('[data-show-scale]')) f.hidden = f.dataset.showScale !== o.scale;
       for (const f of card.querySelectorAll('[data-show-ext]')) f.hidden = f.dataset.showExt !== p?.ext;
       for (const f of card.querySelectorAll('[data-show-alpha]')) f.hidden = !p?.alphaPixFmt;
+      for (const f of card.querySelectorAll('[data-show-dwa]')) f.hidden = p?.ext !== 'exr' || !String(o.exrCompression).startsWith('dwa');
       card.querySelector('[data-k="colorSpace"]').placeholder = `${autoColorSpace(o)} (automatic)`;
     };
 

@@ -26,7 +26,9 @@ Options
       --exposure <stops>   Exposure for the Apple Log conversions, in stops (default: 0 = neutral)
       --scale <s>          Output size: full, half, quarter, or a width in pixels (default: full)
       --alpha              Add an alpha channel (png8, png16, exr16, exr32, prores4444)
-      --exr-compression <c> EXR compression: zip16 (ZIP, default), zip1 (ZIPS), rle, none
+      --exr-compression <c> EXR compression: zip16 (ZIP, default), zip1 (ZIPS), piz, dwaa, dwab, rle, none
+                           (piz, dwaa and dwab need "npm run setup-exr" once)
+      --dwa-level <n>      DWAA/DWAB compression level (default: 45)
       --start-frame <n>    Frame number of the first image of a sequence (default: ${DEFAULTS.startFrame})
       --frame-match <m>    How edit frames map to source samples: ${Object.keys(FRAME_MATCH).join(' | ')}
                            (default: nearest, which matches Premiere's time-based conform)
@@ -60,6 +62,7 @@ const OPTIONS = {
   scale: { type: 'string' },
   alpha: { type: 'boolean' },
   'exr-compression': { type: 'string' },
+  'dwa-level': { type: 'string' },
   'start-frame': { type: 'string' },
   'frame-match': { type: 'string' },
   config: { type: 'string' },
@@ -113,6 +116,7 @@ function toSettings(values, positionals) {
         colorSpace: o.colorSpace,
         alpha: Boolean(o.alpha),
         exrCompression: o.exrCompression ?? DEFAULTS.output.exrCompression,
+        dwaLevel: o.dwaLevel ?? DEFAULTS.output.dwaLevel,
         ...scale,
       })),
   };

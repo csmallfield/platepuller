@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { framesToTimecode } from './xmeml.js';
+import { OPENEXR_COMPRESSION, recompressFolder } from './openexr.js';
 
 export const FRAME_MATCH = {
   nearest: 'each frame slot shows the sample whose timestamp is nearest (Premiere-style conform)',
@@ -127,7 +128,8 @@ export function ffmpegArgs(job, { color = { mode: 'none' }, frameMatch = 'neares
       '-vf', vf,
       '-frames:v', String(range.frames),
       ...preset.video,
-      ...(preset.ext === 'exr' ? ['-compression', output.exrCompression ?? 'zip16'] : []),
+      // DWAA/DWAB/PIZ are applied afterwards by OpenEXR, so ffmpeg writes those uncompressed
+      ...(preset.ext === 'exr' ? ['-compression', OPENEXR_COMPRESSION.has(output.exrCompression) ? 'none' : output.exrCompression ?? 'zip16'] : []),
       '-an', '-map_metadata', '-1',
       '-f', 'image2', '-start_number', String(job.seq.start),
       outPath,
@@ -227,8 +229,18 @@ async function encodeSequence(job, opts) {
   fs.mkdirSync(tmp, { recursive: true });
   // The image2 muxer expands % anywhere in the path, so literal % signs are doubled.
   const pattern = path.join(tmp, seq.name).replace(/%/g, '%%') + `.%0${seq.pad}d.${seq.ext}`;
+  const recompress = seq.ext === 'exr' && OPENEXR_COMPRESSION.has(job.output.exrCompression);
+  const frames = job.range.frames;
+  // with a recompression pass, ffmpeg is the first half of the progress bar
+  const share = recompress ? 0.5 : 1;
   try {
-    await runFfmpeg(ffmpegArgs(job, opts, pattern), opts);
+    await runFfmpeg(ffmpegArgs(job, opts, pattern), { ...opts, onProgress: (n) => opts.onProgress?.(n * share) });
+    if (recompress) {
+      await recompressFolder(tmp, job.output.exrCompression, job.output.dwaLevel ?? 45, {
+        signal: opts.signal,
+        onProgress: (n) => opts.onProgress?.(frames * share + n * (1 - share)),
+      });
+    }
     fs.mkdirSync(seq.dir, { recursive: true });
     for (const f of sequenceFrames(seq)) fs.rmSync(path.join(seq.dir, f)); // frames of an earlier version
     for (const f of fs.readdirSync(tmp)) fs.renameSync(path.join(tmp, f), path.join(seq.dir, f));

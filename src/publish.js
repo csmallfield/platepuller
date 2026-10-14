@@ -10,6 +10,7 @@ import { encodeJob, outputExists, FRAME_MATCH } from './encode.js';
 import { validateTemplate } from './template.js';
 import { writeBuiltinLut, writeLinearLut } from './applelog.js';
 import { conversionMatrix } from './colormath.js';
+import { OPENEXR_COMPRESSION, openexrStatus } from './openexr.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const BUILTIN_PRESETS = JSON.parse(fs.readFileSync(path.join(here, 'presets.json'), 'utf8'));
@@ -24,7 +25,15 @@ const COLOR_SPACE_LABEL = { none: 'LOG', 'applelog-rec709': 'REC709', 'applelog-
 
 export const SCALES = { full: 'Full', half: 'Half', quarter: 'Quarter', custom: 'Custom width' };
 
-export const EXR_COMPRESSION = { zip16: 'ZIP (16 lines)', zip1: 'ZIPS (1 line)', rle: 'RLE', none: 'None' };
+export const EXR_COMPRESSION = {
+  zip16: 'ZIP (16 lines, lossless)',
+  zip1: 'ZIPS (1 line, lossless)',
+  piz: 'PIZ (lossless, wavelet)',
+  dwaa: 'DWAA (lossy, small files)',
+  dwab: 'DWAB (lossy, 256-line blocks)',
+  rle: 'RLE (lossless)',
+  none: 'None',
+};
 
 export const DEFAULTS = {
   template: '{editSource}/{clipName}/{clipName}_{colorSpace}_{version}_{preset}',
@@ -46,6 +55,7 @@ export const DEFAULTS = {
     width: 1920, // for scale: 'custom'
     alpha: false,
     exrCompression: 'zip16',
+    dwaLevel: 45, // DWAA/DWAB compression level; 45 is the OpenEXR default
   },
 };
 
@@ -75,7 +85,12 @@ export function normalizeOutput(raw, presets) {
     errors.push('Custom width must be a whole number of pixels (16 to 16384)');
   }
   if (o.alpha && preset && !preset.alphaPixFmt) errors.push(`${o.preset} has no alpha channel option`);
-  if (preset?.ext === 'exr' && !EXR_COMPRESSION[o.exrCompression]) errors.push(`Unknown EXR compression "${o.exrCompression}"`);
+  if (preset?.ext === 'exr') {
+    o.dwaLevel = Number(o.dwaLevel);
+    if (!EXR_COMPRESSION[o.exrCompression]) errors.push(`Unknown EXR compression "${o.exrCompression}"`);
+    else if (OPENEXR_COMPRESSION.has(o.exrCompression) && !openexrStatus().available) errors.push(openexrStatus().reason);
+    if (o.exrCompression.startsWith('dwa') && !(o.dwaLevel > 0 && o.dwaLevel <= 1000)) errors.push('DWA level must be between 1 and 1000 (45 is the default)');
+  }
   if (!preset || !preset.alphaPixFmt) o.alpha = false;
   o.colorSpace = String(o.colorSpace ?? '').trim() || COLOR_SPACE_LABEL[o.color] || 'LOG';
   return { output: o, errors };
