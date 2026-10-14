@@ -117,3 +117,7 @@ works when the published clips are LOG, i.e. no colour conversion.
 ```bash
 npm test
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
