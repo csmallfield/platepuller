@@ -24,11 +24,15 @@ function fpsValue(rate) {
 
 const t6 = (s) => s.toFixed(6);
 
-/** Video and audio filter chains that pick frames [start, end) of the edit at the source's frame rate. */
+/** Video and audio filter chains that pick frames [start, end) of the source at its frame rate. */
 export function selectionFilters(job, frameMatch) {
   const { probe, range, clip } = job;
   const rate = clip.file.rate ?? clip.rate;
   const fps = fpsValue(rate);
+  if (clip.file.sequence) {
+    // image sequences are frame-addressed already: the input starts at the first frame
+    return { seek: null, video: [`setpts=N/(${fpsExpr(rate)})/TB`, `trim=end_frame=${range.frames}`], audio: [], rate };
+  }
   const t0 = probe.firstTime + range.start / fps; // time of the first published frame
   const seek = Math.max(0, t0 - 1); // all-intra sources: a short pre-roll is cheap
   let video;
@@ -62,39 +66,67 @@ function sourceMatrix(probe) {
   return 'bt709';
 }
 
+/** How the decoded source frames are stored: yuv (video), jpeg (full-range yuv), rgb, float (EXR). */
+function sourcePixels(probe) {
+  const f = probe.pixFmt ?? '';
+  if (/f(16|32)/.test(f)) return 'float';
+  if (f.startsWith('yuvj')) return 'jpeg';
+  if (/^(rgb|bgr|gbr|argb|abgr|gray|ya|pal)/.test(f)) return 'rgb';
+  return 'yuv';
+}
+
 /**
  * Colour conversion, resize and final pixel format for one output.
  * Stays in the source's YUV when nothing needs RGB; otherwise works in 16-bit or float RGB.
+ * Float data never goes through swscale, which clamps to 0-1: zscale converts it instead.
  */
 export function imageFilters(job, color) {
   const { preset, output, probe, size } = job;
   const target = preset.space; // yuv | rgb | jpeg | float
-  const pixFmt = output.alpha && preset.alphaPixFmt ? preset.alphaPixFmt : preset.pixFmt;
+  const alpha = output.alpha && preset.alphaPixFmt;
+  const pixFmt = alpha ? preset.alphaPixFmt : preset.pixFmt;
+  const src = sourcePixels(probe);
   const matrix = sourceMatrix(probe);
+  const f16 = alpha ? 'gbrap16le' : 'gbrp16le';
+  const f32 = alpha ? 'gbrapf32le' : 'gbrpf32le';
   const f = [];
-  let rgb = false;
+  let rgb = src !== 'yuv' && src !== 'jpeg';
   const toRgb = (fmt) => {
-    f.push(`scale=in_color_matrix=${matrix}:in_range=tv:out_range=pc`, `format=${fmt}`);
+    if (src === 'float') f.push('zscale', `format=${fmt}`);
+    else if (src === 'yuv') f.push(`scale=in_color_matrix=${matrix}:in_range=tv:out_range=pc`, `format=${fmt}`);
+    else if (src === 'jpeg') f.push('scale=in_color_matrix=bt601:in_range=pc:out_range=pc', `format=${fmt}`);
+    else f.push(`format=${fmt}`);
     rgb = true;
   };
 
-  if (color.mode === 'applelog-rec709' || color.mode === 'lut') {
-    toRgb('gbrp16le');
-    f.push(`lut3d=file='${filterPath(color.lut3d)}':interp=tetrahedral`);
-  } else if (color.mode === 'applelog-acescg') {
-    // log -> scene-linear Rec.2020 (1D LUT), then Rec.2020 -> ACEScg primaries (matrix), all in float
-    toRgb('gbrpf32le');
-    const m = color.matrix;
-    const mix = ['r', 'g', 'b'].flatMap((o, i) => ['r', 'g', 'b'].map((c, j) => `${o}${c}=${m[i][j].toFixed(8)}`)).join(':');
-    f.push(`lut1d=file='${filterPath(color.lut1d)}':interp=linear`, `colorchannelmixer=${mix}`);
-  } else if (target !== 'yuv') {
-    toRgb(target === 'float' ? 'gbrpf32le' : 'gbrp16le');
+  switch (color.mode) {
+    case 'lut3d': // a single 3D LUT: built-in Apple Log filmic, or the user's
+      toRgb(f16);
+      f.push(`lut3d=file='${filterPath(color.lut3d)}':interp=tetrahedral`);
+      break;
+    case 'view': // ACES 1.0 SDR-video, see color_bake.py
+      toRgb(f32);
+      if (color.shaper === 'pq') f.push('zscale=transferin=linear:transfer=smpte2084:npl=100:primariesin=709:primaries=709', `format=${f32}`);
+      f.push(`lut3d=file='${filterPath(color.lut3d)}':interp=tetrahedral`, `lut1d=file='${filterPath(color.lut1d)}':interp=linear`);
+      break;
+    case 'linear': {
+      // to scene-linear ACEScg: [Apple Log -> linear 1D LUT], then a primaries matrix, in float
+      toRgb(f32);
+      if (color.lut1d) f.push(`lut1d=file='${filterPath(color.lut1d)}':interp=linear`);
+      const m = color.matrix;
+      const mix = ['r', 'g', 'b'].flatMap((o, i) => ['r', 'g', 'b'].map((c, j) => `${o}${c}=${m[i][j].toFixed(8)}`)).join(':');
+      f.push(`colorchannelmixer=${mix}`);
+      break;
+    }
+    default: // none / display: no conversion, only what the target format needs
+      if (target === 'float' && !rgb) toRgb(f32);
+      else if ((target === 'rgb' || target === 'jpeg') && !rgb) toRgb(f16);
+      else if (target === 'float' && src !== 'float') toRgb(f32);
   }
 
   const resize = size.width !== probe.width || size.height !== probe.height;
-  if (target === 'float') {
-    // swscale clamps float to 0-1 (and works in integers), which would clip scene-linear
-    // highlights; zimg keeps floats intact, so it does the resize and the final conversion.
+  if (target === 'float' || (src === 'float' && !['lut3d', 'view', 'linear'].includes(color.mode))) {
+    // zimg keeps floats intact (swscale would clip scene-linear highlights to 1.0)
     f.push(resize ? `zscale=w=${size.width}:h=${size.height}:filter=lanczos` : 'zscale');
   } else if (resize) {
     f.push(`scale=${size.width}:${size.height}:flags=lanczos`);
@@ -118,6 +150,35 @@ export function imageFilters(job, color) {
     f.push('setparams=' + Object.entries({ range: 'tv', ...tags }).map(([k, v]) => `${k}=${v}`).join(':'));
   }
   return f;
+}
+
+/** Input options for a clip's source: a movie (seeking), or an image sequence. */
+function inputArgs(clip, sel, opts) {
+  const seq = clip.file.sequence;
+  if (!seq) return ['-ss', t6(sel.seek), '-i', clip.file.path];
+  if (opts.sequenceList) return ['-f', 'concat', '-safe', '0', '-i', opts.sequenceList];
+  // The image2 demuxer expands % anywhere in the path, so literal % signs are doubled.
+  const number = seq.padded ? `%0${seq.pad}d` : '%d';
+  const pattern = path.join(seq.dir, seq.prefix).replace(/%/g, '%%') + `${number}.${seq.ext}`;
+  return ['-framerate', fpsExpr(sel.rate), '-start_number', String(seq.first), '-i', pattern];
+}
+
+/** Sequences with gaps (or mixed number padding) are read from a list; a missing frame repeats the previous one. */
+export function needsSequenceList(clip) {
+  const seq = clip.file.sequence;
+  return Boolean(seq && (seq.missing.length || (!seq.padded && seq.files.some((f) => f.digits !== String(f.n)))));
+}
+
+export function writeSequenceList(clip, file) {
+  const seq = clip.file.sequence;
+  const byNumber = new Map(seq.files.map((f) => [f.n, f.file]));
+  const lines = ['ffconcat version 1.0'];
+  let last = seq.files[0].file;
+  for (let n = seq.first; n <= seq.last; n++) {
+    last = byNumber.get(n) ?? last;
+    lines.push(`file '${last.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`);
+  }
+  fs.writeFileSync(file, lines.join('\n') + '\n');
 }
 
 /** True for EXR outputs that OpenEXR (not ffmpeg) compresses: ffmpeg sends them raw frames. */
@@ -159,7 +220,8 @@ function outputArgs(job, i, target, withAudio, rate) {
  * `jobs` all belong to the same clip; `targets[i]` is where output i goes (file, frame
  * pattern or pipe); `colors[i]` comes from colorResources().
  */
-export function clipArgs(jobs, targets, { colors = [], frameMatch = 'nearest' } = {}) {
+export function clipArgs(jobs, targets, opts = {}) {
+  const { colors = [], frameMatch = 'nearest' } = opts;
   const { probe, clip } = jobs[0];
   const sel = selectionFilters(jobs[0], frameMatch);
   // One filtergraph: select (and trim) the frames once, then split to every output's chain,
@@ -180,7 +242,7 @@ export function clipArgs(jobs, targets, { colors = [], frameMatch = 'nearest' } 
   if (audio.length) graphs.push(`[1:a]${sel.audio.join(',')},asplit=${audio.length}${audio.map((i) => `[a${i}]`).join('')}`);
   return [
     '-hide_banner', '-nostdin', '-loglevel', 'error', '-progress', 'pipe:1',
-    '-y', '-copyts', '-ss', t6(sel.seek), '-i', clip.file.path,
+    '-y', '-copyts', ...inputArgs(clip, sel, opts),
     ...(audio.length ? ['-ss', t6(sel.seek), '-vn', '-i', clip.file.path] : []),
     ...graphs.flatMap((g) => ['-filter_complex', g]),
     ...jobs.flatMap((j, i) => outputArgs(j, i, targets[i], audio.includes(i), sel.rate)),
@@ -273,6 +335,11 @@ function publishStaged(job, tmp) {
  */
 export async function encodeClip(jobs, opts = {}) {
   const staged = jobs.map(staging);
+  let sequenceList = null;
+  if (needsSequenceList(jobs[0].clip)) {
+    sequenceList = path.join(os.tmpdir(), `platepuller-${process.pid}-${++pipeCounter}.ffconcat`);
+    writeSequenceList(jobs[0].clip, sequenceList);
+  }
   const helpers = [];
   const controller = new AbortController();
   const stop = () => controller.abort();
@@ -307,7 +374,7 @@ export async function encodeClip(jobs, opts = {}) {
     });
     await Promise.all(staged.map((s) => s.ready).filter(Boolean));
 
-    const args = clipArgs(jobs, staged.map((s) => s.target), opts);
+    const args = clipArgs(jobs, staged.map((s) => s.target), { ...opts, sequenceList });
     const ffmpegRun = runFfmpeg(args, {
       ...opts,
       signal: controller.signal,
@@ -327,5 +394,6 @@ export async function encodeClip(jobs, opts = {}) {
     throw opts.signal?.aborted ? new Error('cancelled') : err;
   } finally {
     opts.signal?.removeEventListener('abort', stop);
+    if (sequenceList) fs.rmSync(sequenceList, { force: true });
   }
 }

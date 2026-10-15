@@ -14,7 +14,7 @@
     <img src="icon.svg" alt="" width="28" height="28">
     <div>
       <h1>platepuller</h1>
-      <p>Plate pulls from Premiere edits</p>
+      <p>Plate pulls and conversions for edits, renders and footage</p>
     </div>
   </div>
   <span class="version" id="version"></span>
@@ -22,16 +22,40 @@
 
 <main>
   <section class="panel" id="sec-edit">
-    <h2><span class="num">1</span>Edit</h2>
-    <p class="hint">In Premiere: select the sequence, then File › Export › Final Cut Pro XML.</p>
-    <div class="row">
-      <input type="text" id="xml" class="path" placeholder="Path to the exported .xml" spellcheck="false" autocomplete="off">
-      <button type="button" class="btn" data-pick="xml" data-target="xml">Browse…</button>
+    <h2 class="split"><span><span class="num">1</span>Source</span>
+      <div class="segmented" role="radiogroup" aria-label="Source">
+        <label><input type="radio" name="mode" value="xml"><span>Premiere edit</span></label>
+        <label><input type="radio" name="mode" value="files"><span>Files &amp; folders</span></label>
+      </div>
+    </h2>
+    <div data-mode="xml">
+      <p class="hint">In Premiere: select the sequence, then File › Export › Final Cut Pro XML.</p>
+      <div class="row">
+        <input type="text" id="xml" class="path" placeholder="Path to the exported .xml" spellcheck="false" autocomplete="off">
+        <button type="button" class="btn" data-pick="xml" data-target="xml">Browse…</button>
+      </div>
+    </div>
+    <div data-mode="files">
+      <p class="hint">A movie file, any frame of an image sequence, or a folder of them.</p>
+      <div class="row">
+        <input type="text" id="input" class="path" placeholder="Path to a file, a frame of a sequence, or a folder" spellcheck="false" autocomplete="off">
+        <button type="button" class="btn" data-pick="media" data-target="input">File…</button>
+        <button type="button" class="btn" data-pick="folder" data-target="input">Folder…</button>
+      </div>
+      <div class="grid4">
+        <label class="check"><input type="checkbox" id="recursive"> Include subfolders</label>
+        <label class="field"><span class="label">First frame <span class="muted">(one source only)</span></span><input type="number" id="range-first" step="1"></label>
+        <label class="field"><span class="label">Last frame</span><input type="number" id="range-last" step="1"></label>
+        <label class="field"><span class="label">Frame rate <span class="muted">(sequences)</span></span><input type="number" id="fps" min="1" max="240" step="any" placeholder="from files, else 24"></label>
+      </div>
+    </div>
+    <div class="grid3">
+      <label class="field"><span class="label">Source colour space</span><select id="sourceSpace"></select></label>
     </div>
     <div id="edit-summary" class="summary" hidden></div>
     <div class="table-wrap" id="clips-wrap" hidden>
       <table class="clips">
-        <thead><tr><th>Shot</th><th>Clip</th><th>Source</th><th class="r">Source in</th><th class="r">Source out</th><th class="r">Frames</th><th class="r">Handles</th><th>Notes</th></tr></thead>
+        <thead><tr id="clips-head"></tr></thead>
         <tbody id="clips"></tbody>
       </table>
     </div>
@@ -40,7 +64,7 @@
   <section class="panel" id="sec-dest">
     <h2><span class="num">2</span>Destination</h2>
     <div class="row">
-      <input type="text" id="out" class="path" placeholder="Default: a “publish” folder next to the XML" spellcheck="false" autocomplete="off">
+      <input type="text" id="out" class="path" placeholder="Default: a “publish” folder next to the source" spellcheck="false" autocomplete="off">
       <button type="button" class="btn" data-pick="folder" data-target="out">Browse…</button>
     </div>
     <div class="field-inline">
@@ -61,8 +85,9 @@
     <div class="grid4">
       <label class="field"><span class="label">{version}</span><input type="text" id="version-input" autocomplete="off"></label>
       <label class="field"><span class="label">{string}</span><input type="text" id="string" placeholder="optional" autocomplete="off"></label>
-      <label class="field"><span class="label">Handles (frames)</span><input type="number" id="handles" min="0" step="1"></label>
-      <label class="field"><span class="label">Sequence first frame</span><input type="number" id="startFrame" min="0" step="1" title="Number of the first image (first handle frame) of image sequences"></label>
+      <label class="field" data-mode="xml"><span class="label">Handles (frames)</span><input type="number" id="handles" min="0" step="1"></label>
+      <label class="field" data-mode="xml"><span class="label">Sequence first frame</span><input type="number" id="startFrame" min="0" step="1" title="Number of the first image (first handle frame) of image sequences"></label>
+      <label class="check" data-mode="files" title="Recreate the source folders under the output folder, instead of one flat folder"><input type="checkbox" id="mirror"> Keep folder structure</label>
     </div>
     <div class="examples" id="examples"></div>
   </section>
@@ -123,7 +148,7 @@
     </div>
     <p class="preset-desc"></p>
     <div class="grid2">
-      <label class="field" data-show-color="applelog-rec709 applelog-acescg"><span class="label">Exposure <span class="muted">(stops, 0 = neutral)</span></span><input type="number" data-k="exposure" min="-6" max="6" step="0.25"></label>
+      <label class="field" data-show-color="rec709 acescg applelog-rec709"><span class="label">Exposure <span class="muted">(stops, 0 = neutral)</span></span><input type="number" data-k="exposure" min="-6" max="6" step="0.25"></label>
       <div class="field" data-show-color="lut">
         <span class="label">LUT file</span>
         <div class="row"><input type="text" data-k="lut" class="path" placeholder="Path to a .cube LUT" spellcheck="false"><button type="button" class="btn" data-act="pick-lut">Browse…</button></div>

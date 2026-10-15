@@ -1,5 +1,5 @@
 // The publish pipeline shared by the CLI and the UI:
-// prepare (read XML, probe sources, plan jobs) -> run (encode, write report + processed XML).
+// prepare (read the edit or scan files, probe sources, plan jobs) -> run (encode, report, XML).
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,17 +11,23 @@ import { validateTemplate } from './template.js';
 import { writeBuiltinLut, writeLinearLut } from './applelog.js';
 import { conversionMatrix } from './colormath.js';
 import { OPENEXR_COMPRESSION, openexrStatus } from './openexr.js';
+import { bakeView, ocioStatus } from './colorview.js';
+import { SCENE_SPACES, SOURCE_SPACES, SPACE_LABEL, discover, sourcesToClips, spaceFromMovie } from './sources.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const BUILTIN_PRESETS = JSON.parse(fs.readFileSync(path.join(here, 'presets.json'), 'utf8'));
+export { SOURCE_SPACES };
 
 export const COLOR_MODES = {
   none: 'No conversion (keep source)',
-  'applelog-rec709': 'Apple Log → Rec.709 (built-in, approximate)',
-  'applelog-acescg': 'Apple Log → ACEScg (scene-linear, EXR only)',
+  rec709: 'Rec.709 — ACES 1.0 SDR-video (as in Maya)',
+  acescg: 'ACEScg (scene-linear, EXR only)',
+  'applelog-rec709': 'Apple Log → Rec.709 (simple filmic, approximate)',
   lut: 'Custom 3D LUT (.cube)',
 };
-const COLOR_SPACE_LABEL = { none: 'LOG', 'applelog-rec709': 'REC709', 'applelog-acescg': 'ACESCG', lut: 'REC709' };
+// Older settings: Apple Log -> ACEScg is now 'acescg' with an Apple Log source.
+const LEGACY_COLOR = { 'applelog-acescg': { color: 'acescg', source: 'applelog' } };
+const MODE_LABEL = { rec709: 'REC709', acescg: 'ACESCG', 'applelog-rec709': 'REC709', lut: 'REC709' };
 
 export const SCALES = { full: 'Full', half: 'Half', quarter: 'Quarter', custom: 'Custom width' };
 
@@ -36,7 +42,16 @@ export const EXR_COMPRESSION = {
 };
 
 export const DEFAULTS = {
+  mode: 'xml', // xml: a Premiere edit | files: a file, a sequence or a folder
+  xml: '',
+  input: '', // files mode: file, one frame of a sequence, or folder
+  recursive: false, // files mode: include subfolders
+  mirror: false, // files mode: recreate the source folder structure under the output folder
+  range: null, // files mode, single source: { first, last } frame numbers
+  fps: '', // files mode: frame rate for image sequences ('' = from the files, else 24)
+  sourceSpace: 'auto',
   template: '{editSource}/{clipName}/{clipName}_{colorSpace}_{version}_{preset}',
+  filesTemplate: '{clipName}_{colorSpace}_{version}_{preset}',
   version: 'v001',
   handles: 12,
   string: '',
@@ -44,7 +59,7 @@ export const DEFAULTS = {
   frameMatch: 'nearest',
   existing: 'stop', // stop | overwrite | skip
   includeDisabled: false,
-  startFrame: 1001, // number of the first frame (first handle frame) of image sequences
+  startFrame: 1001, // edit mode: number of the first frame (first handle frame) of image sequences
   output: {
     preset: 'prores422hq',
     color: 'none',
@@ -67,6 +82,8 @@ export function loadPresets(extraFile) {
 /** Fill defaults and check one output definition. Returns { output, errors }. */
 export function normalizeOutput(raw, presets) {
   const o = { ...DEFAULTS.output, ...raw };
+  if (LEGACY_COLOR[o.color]) Object.assign(o, { color: LEGACY_COLOR[o.color].color, forceSource: LEGACY_COLOR[o.color].source });
+  if (o.color === 'applelog-rec709') o.forceSource = 'applelog';
   o.exposure = Number(o.exposure);
   o.width = Number(o.width);
   o.alpha = Boolean(o.alpha);
@@ -76,8 +93,8 @@ export function normalizeOutput(raw, presets) {
   if (!COLOR_MODES[o.color]) errors.push(`Unknown colour mode "${o.color}"`);
   if (o.color === 'lut' && !o.lut) errors.push('Choose a LUT file');
   else if (o.color === 'lut' && !fs.existsSync(o.lut)) errors.push(`LUT not found: ${o.lut}`);
-  if (o.color.startsWith('applelog-') && !(Math.abs(o.exposure) <= 6)) errors.push('Exposure must be between -6 and +6 stops');
-  if (o.color === 'applelog-acescg' && preset && preset.space !== 'float') {
+  if (o.color !== 'none' && o.color !== 'lut' && !(Math.abs(o.exposure) <= 6)) errors.push('Exposure must be between -6 and +6 stops');
+  if (o.color === 'acescg' && preset && preset.space !== 'float') {
     errors.push('ACEScg is scene-linear and needs a float format: choose exr16 or exr32');
   }
   if (!SCALES[o.scale]) errors.push(`Unknown resolution "${o.scale}"`);
@@ -92,55 +109,38 @@ export function normalizeOutput(raw, presets) {
     if (o.exrCompression.startsWith('dwa') && !(o.dwaLevel > 0 && o.dwaLevel <= 1000)) errors.push('DWA level must be between 1 and 1000 (45 is the default)');
   }
   if (!preset || !preset.alphaPixFmt) o.alpha = false;
-  o.colorSpace = String(o.colorSpace ?? '').trim() || COLOR_SPACE_LABEL[o.color] || 'LOG';
+  // An empty label means automatic; for "no conversion" that depends on each source.
+  o.colorSpace = String(o.colorSpace ?? '').trim() || MODE_LABEL[o.color] || null;
   return { output: o, errors };
 }
 
-/**
- * Read the edit, probe sources and plan every job. Never throws for problems the user
- * can fix; they come back in `errors` so a UI can show them next to the inputs.
- */
-export async function preparePublish(settings, presets = BUILTIN_PRESETS) {
-  const s = { ...DEFAULTS, ...settings };
-  s.handles = Number(s.handles);
-  s.jobs = Math.max(1, Number(s.jobs) || 1);
-  s.startFrame = Number(s.startFrame);
-  const errors = [];
-  const notes = [];
+/** {colorSpace} for a job: the output's label, or the source's own space when not converting. */
+export function jobColorLabel(output, inputSpace) {
+  return output.colorSpace ?? SPACE_LABEL[inputSpace] ?? 'SOURCE';
+}
 
-  if (!Number.isInteger(s.handles) || s.handles < 0) errors.push('Handles must be a whole number of frames');
-  if (!FRAME_MATCH[s.frameMatch]) errors.push(`Unknown frame match "${s.frameMatch}"`);
-  if (!Number.isInteger(s.startFrame) || s.startFrame < 0) errors.push('Sequence start frame must be a whole number, 0 or more');
-  let templateOk = true;
-  try {
-    validateTemplate(s.template);
-  } catch (err) {
-    templateOk = false;
-    errors.push(err.message);
+/** Problems with converting `space` for `output`, or null. */
+function colorProblem(output, space, clipName) {
+  if (output.color === 'none' || output.color === 'lut' || output.forceSource) return null;
+  if (!space) return `cannot tell what colour space ${clipName} is in: choose a Source colour space`;
+  if (output.color === 'acescg' && !SCENE_SPACES.has(space)) {
+    return `${clipName} is display-referred (${SOURCE_SPACES[space]}); ACEScg needs a scene-linear or log source`;
   }
-  const outputs = (s.outputs?.length ? s.outputs : [DEFAULTS.output]).map((raw, i) => {
-    const { output, errors: e } = normalizeOutput(raw, presets);
-    errors.push(...e.map((m) => `Output ${i + 1}: ${m}`));
-    return { ...output, index: i };
-  });
+  if (output.color === 'rec709' && SCENE_SPACES.has(space) && !ocioStatus().available) return ocioStatus().reason;
+  return null;
+}
 
-  const result = { settings: s, outputs, errors, notes, jobs: [], edit: null };
-  if (!s.xml) {
-    errors.push('Choose an edit XML');
-    return result;
-  }
-  if (!fs.existsSync(s.xml)) {
-    errors.push(`XML not found: ${s.xml}`);
-    return result;
-  }
-
+/** Read the edit's clips and probe their media (Premiere XML input). */
+async function editClips(s, result) {
+  const { errors, notes } = result;
+  if (!s.xml) return errors.push('Choose an edit XML');
+  if (!fs.existsSync(s.xml)) return errors.push(`XML not found: ${s.xml}`);
   let edit;
   const xmlText = fs.readFileSync(s.xml, 'utf8');
   try {
     edit = readVideoClips(parseXmeml(xmlText));
   } catch (err) {
-    errors.push(`Could not read the XML: ${err.message}`);
-    return result;
+    return errors.push(`Could not read the XML: ${err.message}`);
   }
   result.xmlText = xmlText;
   result.editSource = path.parse(s.xml).name;
@@ -151,17 +151,11 @@ export async function preparePublish(settings, presets = BUILTIN_PRESETS) {
   }
   if (!s.includeDisabled) edit.clips = edit.clips.filter((c) => c.enabled);
   result.edit = edit;
-  if (!edit.clips.length) {
-    errors.push('No video clips with media found in the XML');
-    return result;
-  }
+  if (!edit.clips.length) return errors.push('No video clips with media found in the XML');
 
   const sources = [...new Set(edit.clips.map((c) => c.file.path))];
   const missing = sources.filter((p) => !fs.existsSync(p));
-  if (missing.length) {
-    errors.push(`Source media not found:\n${missing.join('\n')}`);
-    return result;
-  }
+  if (missing.length) return errors.push(`Source media not found:\n${missing.join('\n')}`);
   const probes = new Map();
   for (const p of sources) {
     try {
@@ -170,10 +164,99 @@ export async function preparePublish(settings, presets = BUILTIN_PRESETS) {
       errors.push(`Could not read ${p}: ${err.message.split('\n')[0]}`);
     }
   }
-  if (probes.size < sources.length || !templateOk) return result;
+  if (probes.size < sources.length) return;
+  for (const c of edit.clips) c.detected = spaceFromMovie(probes.get(c.file.path));
+  result.probes = probes;
+}
+
+/** Find and probe the movies and image sequences to publish (files and folders input). */
+async function fileClips(s, result) {
+  const { errors, notes } = result;
+  if (!s.input) return errors.push('Choose a file, a sequence or a folder');
+  if (!fs.existsSync(s.input)) return errors.push(`Not found: ${s.input}`);
+  const input = path.resolve(s.input);
+  const isDir = fs.statSync(input).isDirectory();
+  let found;
+  try {
+    found = discover(input, { recursive: s.recursive });
+  } catch (err) {
+    return errors.push(err.message);
+  }
+  const fps = s.fps === '' || s.fps == null ? null : Number(s.fps);
+  if (fps !== null && !(fps > 0 && fps <= 240)) return errors.push('Frame rate must be a number above 0');
+  const range = s.range && (s.range.first !== '' || s.range.last !== '') ? s.range : null;
+  const r = await sourcesToClips(found, { fps, range });
+  errors.push(...r.errors);
+  notes.push(...r.notes);
+  const root = found.root;
+  for (const c of r.clips) c.relDir = path.relative(root, c.dir);
+  result.editSource = isDir ? path.basename(input) : r.clips[0]?.name ?? path.parse(input).name;
+  // next to the input, never inside a folder that is being scanned
+  result.out = path.resolve(s.out || (isDir ? `${input}_publish` : path.join(path.dirname(input), 'publish')));
+  result.edit = { sequenceName: result.editSource, clips: r.clips, skipped: [] };
+  result.probes = r.probes;
+  result.root = root;
+  if (!r.clips.length && !r.errors.length) errors.push('No movie files or image sequences found there');
+}
+
+/**
+ * Read the input, probe sources and plan every job. Never throws for problems the user
+ * can fix; they come back in `errors` so a UI can show them next to the inputs.
+ */
+export async function preparePublish(settings, presets = BUILTIN_PRESETS) {
+  const s = { ...DEFAULTS, ...settings };
+  const files = s.mode === 'files';
+  s.handles = files ? 0 : Number(s.handles);
+  s.jobs = Math.max(1, Number(s.jobs) || 1);
+  s.startFrame = Number(s.startFrame);
+  const template = files ? s.filesTemplate : s.template;
+  const errors = [];
+  const notes = [];
+
+  if (!Number.isInteger(s.handles) || s.handles < 0) errors.push('Handles must be a whole number of frames');
+  if (!FRAME_MATCH[s.frameMatch]) errors.push(`Unknown frame match "${s.frameMatch}"`);
+  if (!Number.isInteger(s.startFrame) || s.startFrame < 0) errors.push('Sequence start frame must be a whole number, 0 or more');
+  if (!SOURCE_SPACES[s.sourceSpace]) errors.push(`Unknown source colour space "${s.sourceSpace}"`);
+  let templateOk = true;
+  try {
+    validateTemplate(template);
+  } catch (err) {
+    templateOk = false;
+    errors.push(err.message);
+  }
+  const outputs = (s.outputs?.length ? s.outputs : [DEFAULTS.output]).map((raw, i) => {
+    const { output, errors: e } = normalizeOutput(raw, presets);
+    errors.push(...e.map((m) => `Output ${i + 1}: ${m}`));
+    return { ...output, index: i };
+  });
+
+  const result = { settings: s, mode: files ? 'files' : 'xml', outputs, errors, notes, jobs: [], edit: null };
+  await (files ? fileClips(s, result) : editClips(s, result));
+  if (!result.edit?.clips.length || !result.probes || !templateOk) return result;
+
+  // colour space of each source: chosen, or detected from the files
+  for (const c of result.edit.clips) c.inputSpace = s.sourceSpace !== 'auto' ? s.sourceSpace : c.detected?.space ?? null;
+  for (const o of outputs) {
+    const problems = new Map();
+    for (const c of result.edit.clips) {
+      const p = colorProblem(o, c.inputSpace, c.name);
+      if (p) problems.set(p.replace(c.name, '{clip}'), [...(problems.get(p.replace(c.name, '{clip}')) ?? []), c.name]);
+    }
+    for (const [msg, names] of problems) {
+      const who = names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ');
+      errors.push(`Output ${o.index + 1}: ${msg.replace('{clip}', who)}`);
+    }
+  }
 
   const validOutputs = outputs.filter((o) => presets[o.preset]);
-  result.jobs = buildJobs({ edit, probes, presets, outputs: validOutputs, opts: { ...s, out: result.out }, editSource: result.editSource });
+  result.jobs = buildJobs({
+    edit: result.edit,
+    probes: result.probes,
+    presets,
+    outputs: validOutputs,
+    opts: { ...s, template, out: result.out, mirror: files && s.mirror, keepNumbers: files },
+    editSource: result.editSource,
+  });
   result.jobs.forEach((j, i) => {
     j.id = i;
     const exists = outputExists(j);
@@ -189,12 +272,14 @@ export async function preparePublish(settings, presets = BUILTIN_PRESETS) {
     if (!clashes.has(key)) clashes.set(key, []);
     clashes.get(key).push(path.relative(result.out, list[0].outPath));
   }
-  for (const [key, files] of clashes) {
-    const more = files.length > 1 ? ` and ${files.length - 1} more` : '';
+  for (const [key, list] of clashes) {
+    const more = list.length > 1 ? ` and ${list.length - 1} more` : '';
     const fix = key.startsWith('outputs')
       ? 'Pick different formats or colour space labels, or add {preset} / {colorSpace} to the naming template.'
-      : 'Add {shot} or {clipName} to the naming template.';
-    errors.push(`The naming gives ${key} the same file names (${files[0]}${more}). ${fix}`);
+      : files
+        ? 'Sources in different folders have the same name: turn on "Keep folder structure", or add {folder} to the naming template.'
+        : 'Add {shot} or {clipName} to the naming template.';
+    errors.push(`The naming gives ${key} the same file names (${list[0]}${more}). ${fix}`);
   }
   const blocked = result.jobs.filter((j) => j.status === 'exists').length;
   if (blocked) errors.push(`${blocked} output file(s) already exist. Choose to overwrite or skip existing files.`);
@@ -223,7 +308,7 @@ function writeReport(file, jobs) {
     'publishedFirstFrame', 'publishedLastFrame', 'frames', 'sequenceFirstFrame', 'sequenceLastFrame', 'file', 'warnings',
   ];
   const rows = jobs.map((j) => [
-    j.shot, j.clip.name, j.output.index + 1, j.presetName, j.output.colorSpace, `${j.size.width}x${j.size.height}`, j.status, j.clip.file.path,
+    j.shot, j.clip.name, j.output.index + 1, j.presetName, j.colorSpace, `${j.size.width}x${j.size.height}`, j.status, j.clip.file.path,
     j.clip.in, j.clip.out - 1, j.range.head, j.range.tail, j.range.start, j.range.end - 1, j.range.frames,
     j.seq ? j.seq.start : '', j.seq ? j.seq.start + j.range.frames - 1 : '', j.displayPath,
     [...j.warnings, j.error].filter(Boolean).join('; '),
@@ -232,14 +317,32 @@ function writeReport(file, jobs) {
 }
 
 /** What the encoder needs for an output's colour mode: LUT files and matrices. */
-export function colorResources(o) {
+const LINEAR_PRIMARIES = { acescg: 'acescg', lin_rec709: 'rec709', lin_rec2020: 'rec2020', aces2065: 'aces2065' };
+const scaleMatrix = (m, gain) => m.map((row) => row.map((v) => v * gain));
+
+/**
+ * What the encoder needs to convert a source in `inputSpace` for output `o`: LUT files,
+ * matrices and how the result is tagged. Modes understood by encode.imageFilters:
+ *   none     - no conversion
+ *   view     - ACES 1.0 SDR-video: [PQ shaper for scene-linear] -> 3D LUT -> 1D display encoding
+ *   lut3d    - a single 3D LUT (built-in Apple Log filmic, or the user's)
+ *   linear   - to ACEScg: [Apple Log 1D LUT] -> matrix (with exposure)
+ *   display  - already display-referred Rec.709 / sRGB: just tag it
+ */
+export function colorResources(o, inputSpace) {
+  const space = o.forceSource ?? inputSpace;
+  const gain = 2 ** (o.exposure || 0);
   switch (o.color) {
     case 'applelog-rec709':
-      return { mode: o.color, lut3d: writeBuiltinLut(o.exposure), display: 'rec709' };
+      return { mode: 'lut3d', lut3d: writeBuiltinLut(o.exposure), display: 'rec709' };
     case 'lut':
-      return { mode: o.color, lut3d: path.resolve(o.lut), display: 'rec709' };
-    case 'applelog-acescg':
-      return { mode: o.color, lut1d: writeLinearLut(o.exposure), matrix: conversionMatrix('rec2020', 'acescg') };
+      return { mode: 'lut3d', lut3d: path.resolve(o.lut), display: 'rec709' };
+    case 'rec709':
+      if (!SCENE_SPACES.has(space)) return { mode: 'display', display: 'rec709' };
+      return { mode: 'view', ...bakeView(space, o.exposure || 0), shaper: space === 'applelog' ? null : 'pq', display: 'rec709' };
+    case 'acescg':
+      if (space === 'applelog') return { mode: 'linear', lut1d: writeLinearLut(o.exposure), matrix: conversionMatrix('rec2020', 'acescg') };
+      return { mode: 'linear', matrix: scaleMatrix(conversionMatrix(LINEAR_PRIMARIES[space], 'acescg'), gain) };
     default:
       return { mode: 'none' };
   }
@@ -250,7 +353,7 @@ export function processedSuffixes(outputs) {
   if (outputs.length === 1) return ['_processed'];
   const seen = new Map();
   return outputs.map((o) => {
-    let base = `_${o.preset}_${o.colorSpace}`;
+    let base = `_${o.preset}_${o.colorSpace ?? 'SOURCE'}`;
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
     if (n > 1) base += `_${n}`;
@@ -266,7 +369,14 @@ export async function runPublish(prepared, { onEvent = () => {}, signal } = {}) 
   if (prepared.errors.length) throw new Error(prepared.errors.join('\n'));
   const { settings: s, jobs, outputs, out, editSource, xmlText } = prepared;
 
-  const colors = outputs.map(colorResources);
+  // LUTs and matrices per output and source colour space (sources can differ in files mode)
+  const colorCache = new Map();
+  const colorFor = (j) => {
+    const key = `${j.output.index}|${j.clip.inputSpace}`;
+    if (!colorCache.has(key)) colorCache.set(key, colorResources(j.output, j.clip.inputSpace));
+    return colorCache.get(key);
+  };
+  for (const j of jobs) if (j.status === 'todo') colorFor(j); // bake any LUTs before encoding starts
   const todo = jobs.filter((j) => j.status === 'todo');
   onEvent({ type: 'start', total: todo.length, out });
 
@@ -291,7 +401,7 @@ export async function runPublish(prepared, { onEvent = () => {}, signal } = {}) 
       let error = null;
       try {
         await encodeClip(group, {
-          colors: group.map((j) => colors[j.output.index]),
+          colors: group.map(colorFor),
           frameMatch: s.frameMatch,
           signal,
           onProgress: (j, frame) => onEvent({ type: 'job-progress', id: j.id, frame, frames: j.range.frames }),
@@ -322,7 +432,7 @@ export async function runPublish(prepared, { onEvent = () => {}, signal } = {}) 
   const suffixes = processedSuffixes(outputs);
   outputs.forEach((o, i) => {
     const forOutput = jobs.filter((j) => j.output.index === o.index);
-    if (!forOutput.length) return;
+    if (!forOutput.length || prepared.mode === 'files') return; // nothing to relink without an edit
     if (forOutput[0].preset.kind === 'sequence') {
       onEvent({ type: 'file', kind: 'xml-skipped', output: i, reason: 'image sequences are not relinked in an XML' });
       return;

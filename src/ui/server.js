@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { FRAME_MATCH } from '../encode.js';
 import { VARIABLES } from '../template.js';
-import { COLOR_MODES, DEFAULTS, EXR_COMPRESSION, SCALES, loadPresets, preparePublish, runPublish } from '../publish.js';
+import { COLOR_MODES, DEFAULTS, EXR_COMPRESSION, SCALES, SOURCE_SPACES, loadPresets, preparePublish, runPublish } from '../publish.js';
 import { pick, reveal, openBrowser } from './dialogs.js';
 import { OPENEXR_COMPRESSION, openexrStatus } from '../openexr.js';
 
@@ -46,6 +46,7 @@ function summarize(plan) {
   const firstJob = new Map();
   for (const j of plan.jobs) if (!firstJob.has(j.index)) firstJob.set(j.index, j);
   return {
+    mode: plan.mode,
     errors: plan.errors,
     notes: plan.notes,
     out: plan.out ?? null,
@@ -60,6 +61,12 @@ function summarize(plan) {
         name: c.name,
         source: c.file.name ?? path.basename(c.file.path),
         sourcePath: c.file.path,
+        folder: c.relDir ?? null,
+        first: c.file.sequence ? c.file.sequence.first : c.in,
+        last: c.file.sequence ? c.file.sequence.last : c.out - 1,
+        isSequence: Boolean(c.file.sequence),
+        space: c.inputSpace ?? null,
+        detected: c.detected?.from ?? null,
         in: c.in,
         out: c.out - 1,
         duration: c.out - c.in,
@@ -132,6 +139,7 @@ const API = {
       version: pkg.version,
       presets,
       colorModes: COLOR_MODES,
+      sourceSpaces: SOURCE_SPACES,
       scales: SCALES,
       exrCompression: EXR_COMPRESSION,
       openexr: { ...openexrStatus(), needs: [...OPENEXR_COMPRESSION] },

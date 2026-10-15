@@ -38,7 +38,7 @@ export async function probePackets(file, ffprobe = 'ffprobe') {
 async function doProbe(file, ffprobe) {
   const { stdout: info } = await run(ffprobe, [
     '-v', 'error',
-    '-show_entries', 'stream=index,codec_type,codec_name,width,height,time_base,r_frame_rate,sample_rate,channels,color_space,color_primaries,color_transfer',
+    '-show_entries', 'stream=index,codec_type,codec_name,width,height,pix_fmt,time_base,r_frame_rate,sample_rate,channels,color_space,color_primaries,color_transfer:format_tags=com.apple.quicktime.make',
     '-of', 'json', file,
   ]);
   const meta = JSON.parse(info);
@@ -63,6 +63,8 @@ async function doProbe(file, ffprobe) {
     colorSpace: video.color_space,
     colorPrimaries: video.color_primaries,
     colorTransfer: video.color_transfer,
+    pixFmt: video.pix_fmt,
+    make: meta.format?.tags?.['com.apple.quicktime.make'] ?? null,
     audio: audio ? { channels: audio.channels, sampleRate: Number(audio.sample_rate) } : null,
     timeBase: { num: tbNum, den: tbDen },
     samples,

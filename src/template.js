@@ -14,7 +14,8 @@ export const VARIABLES = {
   resolution: 'Source resolution (e.g. 3840x2160)',
   string: 'From --string',
   handles: 'Requested handle length in frames',
-  editSource: 'XML file name without extension',
+  editSource: 'XML file name, or the input folder / file name',
+  folder: 'Name of the folder the source is in',
 };
 
 const TOKEN = /\{(\w+)\}|<(\w+)>/g;

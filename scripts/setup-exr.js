@@ -32,8 +32,8 @@ try {
   }
   log('Installing OpenEXR packages...');
   run(venvPython(), ['-m', 'pip', 'install', '--disable-pip-version-check', '-q', '-r', path.join(ROOT, 'requirements-exr.txt')]);
-  log('OpenEXR support ready: DWAA, DWAB and PIZ compression are available.');
+  log('Ready: DWAA, DWAB and PIZ EXR compression, and the ACES Rec.709 view.');
 } catch (err) {
-  console.error(`OpenEXR setup skipped: ${err.message}`);
+  console.error(`OpenEXR / OpenColorIO setup skipped: ${err.message}`);
   process.exitCode = 1;
 }

@@ -59,15 +59,25 @@ function save() {
 }
 
 function autoColorSpace(o) {
-  return { none: 'LOG', 'applelog-acescg': 'ACESCG' }[o.color] ?? 'REC709';
+  return { none: 'from source', acescg: 'ACESCG' }[o.color] ?? 'REC709';
+}
+
+const files = () => state.mode === 'files';
+const templateKey = () => (files() ? 'filesTemplate' : 'template');
+
+/** Show the fields of the current source mode, and its naming template. */
+function applyMode() {
+  for (const e of document.querySelectorAll('[data-mode]')) e.hidden = e.dataset.mode !== state.mode;
+  $('template').value = state[templateKey()] ?? '';
 }
 
 // ---- form ---------------------------------------------------------------------------
 
 const SIMPLE = [
   ['xml', 'xml'],
+  ['input', 'input'],
+  ['fps', 'fps'],
   ['out', 'out'],
-  ['template', 'template'],
   ['version-input', 'version'],
   ['string', 'string'],
   ['handles', 'handles'],
@@ -81,11 +91,46 @@ function bindForm() {
     const input = $(id);
     input.value = state[key] ?? '';
     input.addEventListener('input', () => {
-      state[key] = input.type === 'number' ? Number(input.value) : input.value;
-      if (key === 'xml') clearProgress(); // a different edit: the last run's list no longer applies
+      state[key] = input.type === 'number' && input.value !== '' ? Number(input.value) : input.value;
+      if (key === 'xml' || key === 'input') clearProgress(); // a different source: the last run's list no longer applies
       changed();
     });
   }
+  // the naming template belongs to the current mode
+  $('template').addEventListener('input', () => {
+    state[templateKey()] = $('template').value;
+    changed();
+  });
+  for (const r of document.querySelectorAll('input[name="mode"]')) {
+    r.checked = r.value === state.mode;
+    r.addEventListener('change', () => {
+      state.mode = r.value;
+      clearProgress();
+      applyMode();
+      changed();
+    });
+  }
+  for (const id of ['recursive', 'mirror']) {
+    $(id).checked = Boolean(state[id]);
+    $(id).addEventListener('change', (e) => {
+      state[id] = e.target.checked;
+      changed();
+    });
+  }
+  for (const [id, k] of [['range-first', 'first'], ['range-last', 'last']]) {
+    $(id).value = state.range?.[k] ?? '';
+    $(id).addEventListener('input', () => {
+      state.range = { first: $('range-first').value === '' ? '' : Number($('range-first').value), last: $('range-last').value === '' ? '' : Number($('range-last').value) };
+      changed();
+    });
+  }
+  for (const [k, label] of Object.entries(meta.sourceSpaces)) $('sourceSpace').append(el('option', { value: k, text: label }));
+  $('sourceSpace').value = state.sourceSpace;
+  $('sourceSpace').addEventListener('change', (e) => {
+    state.sourceSpace = e.target.value;
+    changed();
+  });
+  applyMode();
   $('clear-progress').addEventListener('click', clearProgress);
   $('includeDisabled').checked = Boolean(state.includeDisabled);
   $('includeDisabled').addEventListener('change', (e) => {
@@ -283,30 +328,53 @@ async function refreshPlan() {
   }
 }
 
+const SPACE_SHORT = { acescg: 'ACEScg', lin_rec709: 'Linear Rec.709', lin_rec2020: 'Linear Rec.2020', aces2065: 'ACES2065-1', applelog: 'Apple Log', rec709: 'Rec.709', srgb: 'sRGB' };
+
 function renderPlan() {
   const p = plan;
-  // edit summary + clips
+  const fileMode = p.mode === 'files';
+  // summary + source list
   const hasEdit = Boolean(p.sequenceName);
   $('edit-summary').hidden = !hasEdit;
   $('clips-wrap').hidden = !p.clips.length;
   if (hasEdit) {
+    const what = fileMode ? 'source' : 'clip';
     $('edit-summary').textContent = '';
-    $('edit-summary').append(el('strong', { text: p.sequenceName }), ` · ${p.clips.length} clip${p.clips.length === 1 ? '' : 's'}`, ...p.notes.map((n) => el('div', { text: n })));
+    $('edit-summary').append(el('strong', { text: p.sequenceName }), ` · ${p.clips.length} ${what}${p.clips.length === 1 ? '' : 's'}`, ...p.notes.map((n) => el('div', { text: n })));
   }
+  const head = fileMode
+    ? ['#', 'Name', 'Folder', 'First', 'Last', 'Frames', 'Colour space', 'Notes']
+    : ['Shot', 'Clip', 'Source', 'Source in', 'Source out', 'Frames', 'Handles', 'Notes'];
+  $('clips-head').textContent = '';
+  head.forEach((h, i) => $('clips-head').append(el('th', { class: i >= 3 && i <= 5 ? 'r' : null, text: h })));
   $('clips').textContent = '';
   for (const c of p.clips) {
-    $('clips').append(
-      el('tr', {},
-        el('td', { text: c.shot ?? '' }),
-        el('td', { text: c.name }),
-        el('td', { text: c.source, title: c.sourcePath }),
-        el('td', { class: 'r', text: c.in }),
-        el('td', { class: 'r', text: c.out }),
-        el('td', { class: 'r', text: c.duration }),
-        el('td', { class: 'r', text: c.head == null ? '' : `${c.head} / ${c.tail}` }),
-        el('td', { class: 'notes', text: c.warnings.join('; ') }),
-      ),
-    );
+    const cells = fileMode
+      ? [
+          el('td', { text: c.shot ?? '' }),
+          el('td', { text: c.name, title: c.sourcePath }),
+          el('td', { text: c.folder || '.' }),
+          el('td', { class: 'r', text: c.first }),
+          el('td', { class: 'r', text: c.last }),
+          el('td', { class: 'r', text: c.duration }),
+          el('td', { text: c.space ? SPACE_SHORT[c.space] ?? c.space : 'unknown', title: c.detected ? `from ${c.detected}` : '' }),
+        ]
+      : [
+          el('td', { text: c.shot ?? '' }),
+          el('td', { text: c.name }),
+          el('td', { text: c.source, title: c.sourcePath }),
+          el('td', { class: 'r', text: c.in }),
+          el('td', { class: 'r', text: c.out }),
+          el('td', { class: 'r', text: c.duration }),
+          el('td', { class: 'r', text: c.head == null ? '' : `${c.head} / ${c.tail}` }),
+        ];
+    $('clips').append(el('tr', {}, ...cells, el('td', { class: 'notes', text: c.warnings.join('; ') })));
+  }
+  // a frame range only makes sense for a single source
+  const one = fileMode && p.clips.length === 1 ? p.clips[0] : null;
+  for (const id of ['range-first', 'range-last']) {
+    $(id).disabled = busy || !one;
+    $(id).placeholder = one ? String(id === 'range-first' ? one.first : one.last) : '';
   }
 
   // example names: first clip, every output
@@ -320,20 +388,21 @@ function renderPlan() {
   if (p.out && first.length) $('examples').append(el('div', { class: 'hint', text: `in ${p.out}` }));
 
   // status + errors
-  const errs = p.errors.filter((e) => e !== 'Choose an edit XML');
+  const errs = p.errors.filter((e) => e !== 'Choose an edit XML' && e !== 'Choose a file, a sequence or a folder');
+  const source = files() ? state.input : state.xml;
   $('errors').textContent = '';
   for (const e of errs) $('errors').append(el('li', { text: e }));
   const todo = p.jobs.filter((j) => j.status === 'todo').length;
   const kept = p.jobs.filter((j) => j.status === 'kept').length;
   const status = $('plan-status');
   status.textContent = '';
-  if (!state.xml) status.textContent = 'Choose an edit XML to begin.';
+  if (!source) status.textContent = files() ? 'Choose a file, a sequence or a folder to begin.' : 'Choose an edit XML to begin.';
   else if (p.jobs.length) {
     const n = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
-    status.append(el('strong', { text: n(todo, 'file') }), ` to publish — ${n(p.clips.length, 'clip')} × ${n(p.outputs.length, 'output')}`);
+    status.append(el('strong', { text: n(todo, 'file') }), ` to publish — ${n(p.clips.length, fileMode ? 'source' : 'clip')} × ${n(p.outputs.length, 'output')}`);
     if (kept) status.append(`, ${kept} existing kept`);
   }
-  $('publish').disabled = busy || errs.length > 0 || !state.xml || todo === 0;
+  $('publish').disabled = busy || errs.length > 0 || !source || todo === 0;
 }
 
 // ---- publishing ---------------------------------------------------------------------
@@ -466,9 +535,17 @@ async function init() {
   const d = meta.defaults;
   const saved = loadSaved() ?? {};
   state = {
+    mode: d.mode,
     xml: '',
+    input: '',
+    recursive: d.recursive,
+    mirror: d.mirror,
+    range: null,
+    fps: d.fps,
+    sourceSpace: d.sourceSpace,
     out: '',
     template: d.template,
+    filesTemplate: d.filesTemplate,
     version: d.version,
     string: d.string,
     handles: d.handles,
@@ -481,6 +558,9 @@ async function init() {
   };
   state.outputs = (saved.outputs?.length ? saved.outputs : [d.output]).map((o) => ({ ...d.output, ...o }))
     .filter((o) => meta.presets[o.preset]);
+  // older settings: Apple Log -> ACEScg is now "ACEScg" (the source colour space is detected)
+  for (const o of state.outputs) if (o.color === 'applelog-acescg') o.color = 'acescg';
+  if (!meta.sourceSpaces[state.sourceSpace]) state.sourceSpace = 'auto';
   if (!state.outputs.length) state.outputs = [{ ...d.output }];
   bindForm();
   renderOutputs();

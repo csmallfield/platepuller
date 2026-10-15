@@ -1,3 +1,5 @@
-# Optional: lets platepuller write DWAA, DWAB and PIZ compressed EXRs (npm run setup-exr)
+# Optional: lets platepuller write DWAA, DWAB and PIZ compressed EXRs, and bake the
+# ACES 1.0 SDR-video (Maya) Rec.709 view with OpenColorIO (npm run setup-exr)
 OpenEXR>=3.3
+opencolorio>=2.4
 numpy

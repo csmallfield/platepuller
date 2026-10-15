@@ -172,7 +172,7 @@ test('float outputs never go through swscale after linearising', () => {
     probe: { width: 3840, height: 2160, colorSpace: 'bt2020nc' },
     size: { width: 1920, height: 1080 },
   };
-  const f = imageFilters(job, { mode: 'applelog-acescg', lut1d: 'x.cube', matrix: conversionMatrix('rec2020', 'acescg') });
+  const f = imageFilters(job, { mode: 'linear', lut1d: 'x.cube', matrix: conversionMatrix('rec2020', 'acescg') });
   const lin = f.findIndex((x) => x.startsWith('lut1d'));
   assert.ok(lin > 0);
   assert.ok(f.slice(lin).every((x) => !x.startsWith('scale=')), 'swscale would clamp values above 1');
@@ -213,4 +213,83 @@ test('one ffmpeg run per clip: decode once, split to every output', () => {
   const movArgs = args.slice(args.indexOf('seq.%04d.exr') + 1);
   assert.ok(movArgs.includes('[a2]') && movArgs.includes('-timecode'));
   assert.ok(after('PIPE').includes('-progress'));
+});
+
+test('files mode: sequences are grouped, gaps found, names cleaned', async () => {
+  const os = await import('node:os');
+  const { discover, readExrHeader, spaceFromExr } = await import('../src/sources.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-seq-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'sub'));
+    for (const n of [1001, 1002, 1004]) fs.writeFileSync(path.join(dir, `shot_A_1.${n}.exr`), '');
+    for (const n of [1, 2, 3]) fs.writeFileSync(path.join(dir, 'sub', `plate_${String(n).padStart(4, '0')}.png`), '');
+    fs.writeFileSync(path.join(dir, 'sub', 'clip.mov'), '');
+    fs.writeFileSync(path.join(dir, 'notes.txt'), '');
+
+    const flat = discover(dir, { recursive: false });
+    assert.equal(flat.sequences.length, 1);
+    const [a] = flat.sequences;
+    assert.equal(a.name, 'shot_A_1');
+    assert.deepEqual([a.first, a.last, a.pad, a.missing], [1001, 1004, 4, [1003]]);
+    assert.equal(flat.movies.length, 0, 'subfolders are skipped unless recursive');
+
+    const all = discover(dir, { recursive: true });
+    assert.deepEqual(all.sequences.map((s) => s.name).sort(), ['plate', 'shot_A_1']);
+    assert.equal(all.movies.length, 1);
+
+    // one frame stands for its whole sequence
+    const one = discover(path.join(dir, 'shot_A_1.1002.exr'));
+    assert.equal(one.sequences.length, 1);
+    assert.equal(one.sequences[0].frames.length, 3);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  // colour space from EXR headers
+  assert.equal(spaceFromExr({ 'arnold/color_space': 'ACEScg' }).space, 'acescg');
+  assert.equal(spaceFromExr({ 'arnold/color_space': 'scene-linear Rec 709/sRGB' }).space, 'lin_rec709');
+  assert.equal(spaceFromExr({ chromaticities: [0.713, 0.293, 0.165, 0.83, 0.128, 0.044, 0.32168, 0.33767] }).space, 'acescg');
+  assert.equal(spaceFromExr({}), null);
+  assert.ok(typeof readExrHeader === 'function');
+});
+
+test('files mode: EXR header attributes are read', async () => {
+  const os = await import('node:os');
+  const { readExrHeader } = await import('../src/sources.js');
+  // magic, version 2, then: name\0 type\0 size value ..., terminated by an empty name
+  const attr = (name, type, value) => Buffer.concat([Buffer.from(`${name}\0${type}\0`, 'latin1'), Buffer.from(Int32Array.of(value.length).buffer), value]);
+  const fps = Buffer.alloc(8);
+  fps.writeInt32LE(24000, 0);
+  fps.writeUInt32LE(1001, 4);
+  const file = path.join(os.tmpdir(), `pp-header-${process.pid}.exr`);
+  fs.writeFileSync(file, Buffer.concat([
+    Buffer.from(Int32Array.of(20000630, 2).buffer),
+    attr('arnold/color_space', 'string', Buffer.from('ACEScg')),
+    attr('framesPerSecond', 'rational', fps),
+    Buffer.from([0]),
+  ]));
+  try {
+    const h = readExrHeader(file);
+    assert.equal(h['arnold/color_space'], 'ACEScg');
+    assert.ok(Math.abs(h.framesPerSecond - 23.976) < 0.001);
+  } finally {
+    fs.rmSync(file, { force: true });
+  }
+});
+
+test('files mode: flat names, or the source folder structure', () => {
+  const clip = (name, relDir) => ({
+    name, relDir, dir: path.join('in', relDir), in: 0, out: 10, start: 0, end: 10, effects: [], inputSpace: 'acescg',
+    rate: { timebase: 24, ntsc: false }, file: { name, path: `${name}#.exr`, rate: { timebase: 24, ntsc: false }, duration: 10, width: 1920, height: 1080, sequence: { first: 1001 } },
+  });
+  const edit = { clips: [clip('a', 'x/one'), clip('b', 'x/two')] };
+  const outputs = [{ preset: 'h265_preview', colorSpace: 'REC709', index: 0 }];
+  const opts = { handles: 0, template: '{clipName}_{colorSpace}', out: 'out', version: 'v1', string: '' };
+  const flat = buildJobs({ edit, probes: new Map(), presets: BUILTIN_PRESETS, outputs, opts, editSource: 'in' });
+  assert.equal(flat[0].outPath, path.join('out', 'a_REC709.mp4'));
+  const mirrored = buildJobs({ edit, probes: new Map(), presets: BUILTIN_PRESETS, outputs, opts: { ...opts, mirror: true }, editSource: 'in' });
+  assert.equal(mirrored[1].outPath, path.join('out', 'x', 'two', 'b_REC709.mp4'));
+  // sequences keep their own numbers in files mode
+  const seq = buildJobs({ edit, probes: new Map(), presets: BUILTIN_PRESETS, outputs: [{ preset: 'exr16', colorSpace: null, index: 0 }], opts: { ...opts, keepNumbers: true }, editSource: 'in' });
+  assert.equal(seq[0].seq.start, 1001);
+  assert.equal(seq[0].colorSpace, 'ACESCG', '{colorSpace} falls back to the source space');
 });

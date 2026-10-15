@@ -21,6 +21,8 @@ export const SPACES = {
   rec2020: { primaries: [[0.708, 0.292], [0.17, 0.797], [0.131, 0.046]], white: [0.3127, 0.329] },
   // ACEScg (AP1 primaries, ACES white point)
   acescg: { primaries: [[0.713, 0.293], [0.165, 0.83], [0.128, 0.044]], white: [0.32168, 0.33767] },
+  // ACES2065-1 (AP0 primaries, ACES white point)
+  aces2065: { primaries: [[0.7347, 0.2653], [0, 1], [0.0001, -0.077]], white: [0.32168, 0.33767] },
 };
 
 export function rgbToXyz({ primaries, white }) {

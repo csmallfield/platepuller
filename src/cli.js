@@ -4,32 +4,45 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { FRAME_MATCH } from './encode.js';
 import { VARIABLES } from './template.js';
-import { DEFAULTS, loadPresets, preparePublish, runPublish } from './publish.js';
+import { COLOR_MODES, DEFAULTS, SOURCE_SPACES, loadPresets, preparePublish, runPublish } from './publish.js';
 
-const HELP = `platepuller <edit.xml> [options]
+const HELP = `platepuller <edit.xml | file | folder> [options]
 
-Publishes every video clip of a Premiere XML (Final Cut Pro 7 XML) edit as its own
-file with handles, then writes <editSource>_processed.xml relinked to the new files.
+With a Premiere XML (Final Cut Pro 7 XML): publishes every video clip of the edit as its
+own file with handles, then writes <editSource>_processed.xml relinked to the new files.
+With a movie file, one frame of an image sequence, or a folder: converts each movie and
+image sequence found there.
 Run "npm run ui" (or platepuller.cmd) for the graphical version.
 
 Options
-  -o, --out <dir>          Output root (default: "publish" next to the XML)
+  -o, --out <dir>          Output root (default: "publish" next to the XML or file,
+                           "<folder>_publish" next to a folder)
   -t, --template <tpl>     Path + name template, "/" for folders. Extension comes from the preset.
                            default: ${DEFAULTS.template}
+                           files and folders: ${DEFAULTS.filesTemplate}
   -p, --preset <name>      Compression preset, repeatable (default: ${DEFAULTS.output.preset})
       --version <v>        {version} value (default: ${DEFAULTS.version})
       --handles <n>        Handle length in frames (default: ${DEFAULTS.handles})
       --string <s>         {string} value
       --color-space <s>    {colorSpace} label (default: LOG, or REC709 when converting)
-      --convert <name>     Built-in colour conversion: applelog-rec709, applelog-acescg (EXR only)
+      --convert <name>     Colour conversion: ${Object.keys(COLOR_MODES).filter((k) => !['none', 'lut'].includes(k)).join(', ')}
+                           rec709 = ACES 1.0 SDR-video, as in Maya (needs "npm run setup-exr" once)
+                           acescg = scene-linear ACEScg (EXR only)
+      --source-space <s>   Source colour space: ${Object.keys(SOURCE_SPACES).join(', ')}
+                           (default: auto, from the files: EXR headers, camera tags)
       --lut <file.cube>    Apply this 3D LUT (e.g. Apple's official Apple Log to Rec709 LUT)
-      --exposure <stops>   Exposure for the Apple Log conversions, in stops (default: 0 = neutral)
+      --exposure <stops>   Exposure for rec709 / acescg / applelog-rec709, in stops (default: 0)
       --scale <s>          Output size: full, half, quarter, or a width in pixels (default: full)
       --alpha              Add an alpha channel (png8, png16, exr16, exr32, prores4444)
       --exr-compression <c> EXR compression: zip16 (ZIP, default), zip1 (ZIPS), piz, dwaa, dwab, rle, none
                            (piz, dwaa and dwab need "npm run setup-exr" once)
       --dwa-level <n>      DWAA/DWAB compression level (default: 45)
       --start-frame <n>    Frame number of the first image of a sequence (default: ${DEFAULTS.startFrame})
+  -r, --recursive          Files and folders: include subfolders
+      --range <first-last> Files and folders, single source: frame range, e.g. 1001-1100
+      --fps <n>            Files and folders: frame rate of image sequences (default: from the
+                           files, else 24)
+      --mirror             Files and folders: recreate the source folder structure in the output
       --frame-match <m>    How edit frames map to source samples: ${Object.keys(FRAME_MATCH).join(' | ')}
                            (default: nearest, which matches Premiere's time-based conform)
       --config <job.json>  Read options from a JSON file (CLI flags win)
@@ -65,6 +78,11 @@ const OPTIONS = {
   'dwa-level': { type: 'string' },
   'start-frame': { type: 'string' },
   'frame-match': { type: 'string' },
+  'source-space': { type: 'string' },
+  recursive: { type: 'boolean', short: 'r' },
+  range: { type: 'string' },
+  fps: { type: 'string' },
+  mirror: { type: 'boolean' },
   config: { type: 'string' },
   presets: { type: 'string' },
   jobs: { type: 'string', short: 'j' },
@@ -85,8 +103,13 @@ function toSettings(values, positionals) {
   const cli = Object.fromEntries(Object.entries(values).filter(([, v]) => v !== undefined).map(([k, v]) => [camel(k), v]));
   const o = { ...fromConfig, ...cli };
   if (o.convert && o.lut) throw new Error('Use either --convert or --lut, not both');
-  if (o.convert && !['applelog-rec709', 'applelog-acescg'].includes(o.convert)) {
-    throw new Error(`Unknown --convert "${o.convert}". Available: applelog-rec709, applelog-acescg`);
+  const converts = [...Object.keys(COLOR_MODES).filter((k) => !['none', 'lut'].includes(k)), 'applelog-acescg'];
+  if (o.convert && !converts.includes(o.convert)) throw new Error(`Unknown --convert "${o.convert}". Available: ${converts.join(', ')}`);
+  let range = o.range;
+  if (typeof range === 'string') {
+    const m = range.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (!m) throw new Error('--range must look like 1001-1100');
+    range = { first: Number(m[1]), last: Number(m[2]) };
   }
   const scale = o.scale === undefined ? {} : /^\d+$/.test(o.scale) ? { scale: 'custom', width: Number(o.scale) } : { scale: o.scale };
   if (o.overwrite && o.skipExisting) throw new Error('Use either --overwrite or --skip-existing');
@@ -94,10 +117,20 @@ function toSettings(values, positionals) {
 
   const color = o.lut ? 'lut' : o.convert ?? 'none';
   const presets = [].concat(o.preset ?? DEFAULTS.output.preset);
+  const input = positionals[0] ?? o.xml ?? o.input;
+  const files = o.mode ? o.mode === 'files' : Boolean(input) && !/\.xml$/i.test(input);
   return {
-    xml: positionals[0] ?? o.xml,
+    mode: files ? 'files' : 'xml',
+    xml: files ? undefined : input,
+    input: files ? input : undefined,
+    recursive: Boolean(o.recursive),
+    mirror: Boolean(o.mirror),
+    range,
+    fps: o.fps ?? '',
+    sourceSpace: o.sourceSpace ?? 'auto',
     out: o.out,
-    template: o.template ?? DEFAULTS.template,
+    template: files ? DEFAULTS.template : o.template ?? DEFAULTS.template,
+    filesTemplate: files ? o.template ?? o.filesTemplate ?? DEFAULTS.filesTemplate : DEFAULTS.filesTemplate,
     version: o.version ?? DEFAULTS.version,
     handles: o.handles ?? DEFAULTS.handles,
     string: o.string ?? DEFAULTS.string,
@@ -136,20 +169,25 @@ async function main() {
   }
 
   const settings = toSettings(values, positionals);
-  if (!settings.xml) {
+  if (!settings.xml && !settings.input) {
     console.log(HELP);
     process.exitCode = 1;
     return;
   }
 
-  console.log('Reading edit and probing sources...');
+  console.log(settings.mode === 'files' ? 'Scanning and probing sources...' : 'Reading edit and probing sources...');
   const plan = await preparePublish(settings, presets);
   for (const n of plan.notes) console.warn(n);
   if (plan.edit) {
-    console.log(`${plan.edit.sequenceName}: ${plan.edit.clips.length} clips -> ${plan.out}`);
+    console.log(`${plan.edit.sequenceName}: ${plan.edit.clips.length} ${plan.mode === 'files' ? 'sources' : 'clips'} -> ${plan.out}`);
     const s = plan.settings;
-    console.log(`handles ${s.handles}  frame match ${s.frameMatch}`);
-    plan.outputs.forEach((o, i) => console.log(`output ${i + 1}: ${o.preset}, colour ${o.color === 'lut' ? `LUT ${o.lut}` : o.color}, {colorSpace}=${o.colorSpace}, ${o.scale === "custom" ? `${o.width}px wide` : o.scale}${o.alpha ? ", alpha" : ""}`));
+    if (plan.mode === 'files') {
+      for (const c of plan.edit.clips) {
+        const seq = c.file.sequence;
+        console.log(`  ${c.name}  ${seq ? `${seq.first}-${seq.last}` : `frames ${c.in}-${c.out - 1}`}  ${c.rate.timebase}${c.rate.ntsc ? '/1.001' : ''} fps  ${c.inputSpace ?? 'colour space unknown'}${c.detected && s.sourceSpace === 'auto' ? ` (${c.detected.from})` : ''}`);
+      }
+    } else console.log(`handles ${s.handles}  frame match ${s.frameMatch}`);
+    plan.outputs.forEach((o, i) => console.log(`output ${i + 1}: ${o.preset}, colour ${o.color === 'lut' ? `LUT ${o.lut}` : o.color}, {colorSpace}=${o.colorSpace ?? 'from source'}, ${o.scale === "custom" ? `${o.width}px wide` : o.scale}${o.alpha ? ", alpha" : ""}`));
     console.log('');
   }
   for (const j of plan.jobs) {

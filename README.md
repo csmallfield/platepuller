@@ -1,14 +1,16 @@
 # platepuller
 
-Plate pulls from a Premiere Pro edit. It publishes every video clip as its own file, with handles,
+Plate pulls from a Premiere Pro edit: it publishes every video clip as its own file, with handles,
 named by a template you control, using FFmpeg. It then writes a copy of the edit relinked to the
-new files.
+new files. It also converts single files, image sequences and whole folders of them, for
+example a folder of ACEScg renders into Rec.709 movies for editing.
 
 ```
 Premiere  ──File › Export › Final Cut Pro XML──▶  edit.xml
 edit.xml  ──platepuller──▶  publish/<editSource>/<clipName>/<clipName>_LOG_v001_prores422hq.mov  (one per clip)
                              publish/<editSource>_processed.xml   (same edit, relinked)
                              publish/<editSource>_report.csv      (ranges, handles, warnings)
+platepuller  D:/renders  (EXR sequences)  ──▶  D:/renders_publish/<sequence>_REC709_v001_h265_preview.mp4
 ```
 
 ## Setup
@@ -20,10 +22,11 @@ winget install Gyan.FFmpeg
 npm install
 ```
 
-Optional: for **DWAA, DWAB and PIZ** EXR compression, which FFmpeg can't write, run
-`npm run setup-exr` once. It needs Python 3 and installs the official OpenEXR package into a private
-`.venv` inside the platepuller folder. `platepuller.cmd` does this for you on first launch if Python
-is installed.
+Optional: run `npm run setup-exr` once for **DWAA, DWAB and PIZ** EXR compression, which
+FFmpeg can't write, and for the **ACES Rec.709 view** (the one Maya uses). It needs Python 3 and
+installs the official OpenEXR and OpenColorIO packages into a private `.venv` inside the
+platepuller folder. `platepuller.cmd` does this for you on first launch if Python is installed.
+If you set it up before the ACES view existed, run `npm run setup-exr` again.
 
 ## The app
 
@@ -31,10 +34,12 @@ On Windows, double-click **`platepuller.cmd`**. On any system, you can run `npm 
 Either one starts a small local server and opens platepuller in your browser. Closing the console
 window stops it.
 
-1. **Edit**: browse to the XML exported from Premiere. The clip list shows each clip's source range
-   and handles, and flags any problems.
-2. **Destination**: choose the output folder (by default, `publish` next to the XML) and what to do
-   if a file already exists.
+1. **Source**: choose **Premiere edit** and browse to the XML exported from Premiere, or choose
+   **Files & folders** and pick a movie, any frame of an image sequence, or a folder (optionally
+   with its subfolders). The list shows each clip or source, its frame range and colour space, and
+   flags any problems. For a single source you can trim it to a frame range.
+2. **Destination**: choose the output folder (by default, `publish` next to the XML or file, or
+   `<folder>_publish` next to a folder) and what to do if a file already exists.
 3. **Naming**: the folder and file-name template. Click a variable chip to insert it. Example
    names for the first clip update as you type.
 4. **Outputs**: for each output, pick a format, a colour conversion and a `{colorSpace}` label.
@@ -54,6 +59,14 @@ node src/cli.js edit.xml --lut "AppleLogToRec709.cube" --preset prores422hq
 node src/cli.js edit.xml --dry-run          # show the plan only
 node src/cli.js --list-presets
 node src/cli.js --list-variables
+```
+
+Files and folders work the same way: give a movie, any frame of a sequence, or a folder.
+
+```bash
+node src/cli.js "D:/renders/shotA" -r --preset h265_preview --convert rec709        # every sequence below
+node src/cli.js "D:/renders/shotA/shotA.1001.exr" --range 1001-1100 --preset prores422hq --convert rec709
+node src/cli.js clip.mov --range 0-47 --preset png16
 ```
 
 Run `node src/cli.js --help` for every option. You can also put options in a JSON file and pass
@@ -129,18 +142,50 @@ half-res ProRes or an `h265_preview` alongside a full-res EXR sequence. On the c
 `--scale half`, `--scale quarter` or `--scale 1280`. Float (EXR) outputs are resized in linear
 light, without clipping.
 
+### Files and folders
+
+- **What it finds:** movie files (mov, mp4, mxf, …) and image sequences (exr, png, jpg, tif, dpx).
+  Numbered files with the same name in the same folder form one sequence, e.g.
+  `shot_1.1001.exr` to `shot_1.1595.exr` is the sequence `shot_1`. **Include subfolders**
+  (`-r`) also scans the folders below.
+- **Missing frames** in a sequence are reported, and the previous frame is held in their place.
+- **Frame rate** of image sequences comes from the files where they record it (EXR
+  `framesPerSecond`, Arnold's `arnold/fps`), otherwise 24. Set it yourself with **Frame rate**
+  (`--fps`).
+- **Naming:** files mode has its own template, `{clipName}_{colorSpace}_{version}_{preset}` by
+  default, where `{clipName}` is the sequence or file name. `{folder}` is the name of the source's
+  folder. Everything goes into one flat folder, unless **Keep folder structure** (`--mirror`)
+  recreates the source folders. If two sources in different folders share a name, you're asked to
+  choose one of those.
+- **Numbers:** image sequence outputs keep the source's frame numbers, and movies get the first
+  frame number as timecode.
+- Handles and the processed XML only apply to Premiere edits.
+
 ### Colour
 
+Each source has a colour space: chosen with **Source colour space** (`--source-space`), or by
+default detected from the files: EXR headers (Arnold's `arnold/color_space`, OIIO-style attributes
+or the chromaticities) and camera tags for movies. iPhone Apple Log footage is recognised.
+
 - With no conversion, the image passes through untouched and keeps the source's colour tags.
+- `--convert rec709` (**Rec.709 — ACES 1.0 SDR-video**) is the ACES view Maya uses by default. It
+  is baked from OpenColorIO's built-in ACES 1.3 config (`ACES 1.0 - SDR Video` on `Rec.1886
+  Rec.709 - Display`), which gives identical results to Maya 2026's `ACES 1.0 SDR-video` on a
+  Rec.1886 / Rec.709 display. It works from ACEScg, linear Rec.709 / sRGB, linear Rec.2020,
+  ACES2065-1 and Apple Log. Scene-linear values are shaped with PQ, then go through a 65³ 3D LUT
+  to linear display light and a 1D LUT for the display encoding, so the clamp at the edge of the
+  gamut and the steep gamma near black stay out of the 3D LUT. Compared with OCIO itself, 99.9% of
+  pixels are within 1.5 of 255. `--exposure` adjusts it in stops. Display-referred sources
+  (Rec.709 video, sRGB) are passed through as they are.
+- `--convert acescg` (EXR only) converts to scene-linear ACEScg: Apple Log is decoded with Apple's
+  published curve, and linear sources change primaries with a matrix (Bradford adaptation to the
+  ACES white). It uses no tone curve, so highlights above 1.0 are kept.
 - `--lut file.cube` applies any 3D LUT. To match Apple's look, use the official
   *Apple Log to Rec.709* LUT from Apple's Log profile download.
-- `--convert applelog-rec709` uses a built-in technical transform: Apple Log decode → Rec.2020
-  linear → Rec.709 gamut → filmic tone curve → gamma 2.4. It's handy for quick dailies but it is
-  **not** Apple's LUT. Use `--exposure` to adjust it, in stops: `0` (default) is neutral, with 18% grey landing at about 44%; `+1` is
-  one stop brighter.
-- `--convert applelog-acescg` (EXR only) decodes Apple Log to scene-linear light with Apple's
-  published curve, then converts Rec.2020 primaries to ACEScg (AP1, Bradford adaptation to the
-  ACES white). It uses no tone curve, so highlights above 1.0 are kept. `--exposure` works here too.
+- `--convert applelog-rec709` is the earlier built-in look for Apple Log: Apple Log decode →
+  Rec.2020 linear → Rec.709 gamut → simple filmic curve → gamma 2.4. It's approximate, and **not**
+  Apple's LUT; `rec709` (ACES) is usually the better choice now. `--exposure` adjusts it in stops.
+  (`--convert applelog-acescg` still works and means `acescg` from Apple Log.)
 
 ## What it does with each clip
 

@@ -9,7 +9,7 @@ if not exist node_modules (
   call npm install --no-audit --no-fund || (pause & exit /b 1)
 )
 if not exist .venv (
-  echo Setting up optional OpenEXR support ^(DWAA/DWAB/PIZ^)...
+  echo Setting up optional OpenEXR and OpenColorIO support ^(DWAA/DWAB/PIZ, ACES view^)...
   node scripts\setup-exr.js --quiet
 )
 node src\ui\server.js --open %*

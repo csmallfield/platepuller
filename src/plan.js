@@ -3,6 +3,7 @@ import path from 'node:path';
 import { rateFps, rateLabel } from './xmeml.js';
 import { framesAtRate } from './probe.js';
 import { renderTemplate } from './template.js';
+import { SPACE_LABEL } from './sources.js';
 
 export function handleRange(clip, handles, sourceFrames) {
   const available = Math.min(clip.file.duration ?? Infinity, sourceFrames ?? Infinity);
@@ -57,6 +58,7 @@ export function buildJobs({ edit, probes, presets, outputs, opts, editSource }) 
     if (range.tail < opts.handles) warnings.push(`tail handle clamped to ${range.tail}`);
     if (clip.effects.length) warnings.push(`timeline effects not baked in: ${clip.effects.join(', ')}`);
     if (clip.end - clip.start !== clip.out - clip.in) warnings.push('speed change on timeline is not applied');
+    if (clip.warnings) warnings.push(...clip.warnings);
 
     for (const output of outputs) {
       const presetName = output.preset;
@@ -66,7 +68,7 @@ export function buildJobs({ edit, probes, presets, outputs, opts, editSource }) 
         sourceFilename: path.parse(clip.file.name ?? clip.file.path).name,
         take: path.parse(clip.file.name ?? clip.file.path).name,
         shot: shotNumber(index),
-        colorSpace: output.colorSpace,
+        colorSpace: output.colorSpace ?? SPACE_LABEL[clip.inputSpace] ?? 'SOURCE',
         version: opts.version,
         compressionPreset: presetName,
         preset: presetName,
@@ -75,16 +77,21 @@ export function buildJobs({ edit, probes, presets, outputs, opts, editSource }) 
         string: opts.string,
         handles: opts.handles,
         editSource,
+        folder: path.basename(clip.dir ?? path.dirname(clip.file.path)),
       };
       const size = outputSize(probe ? { width: probe.width, height: probe.height } : { width: clip.file.width, height: clip.file.height }, output);
       vars.resolution = `${size.width}x${size.height}`;
-      const segments = renderTemplate(opts.template, vars);
-      const job = { clip, index, shot: vars.shot, output, presetName, preset, range, probe, size, warnings };
+      // files mode, "keep folder structure": the source's folder below the input, then the template
+      const mirrored = opts.mirror && clip.relDir ? clip.relDir.split(/[\\/]+/).filter(Boolean) : [];
+      const segments = [...mirrored, ...renderTemplate(opts.template, vars)];
+      const job = { clip, index, shot: vars.shot, output, presetName, preset, range, probe, size, warnings, colorSpace: vars.colorSpace };
       if (preset.kind === 'sequence') {
         // Frames go in their own folder, named like the files: <name>/<name>.1001.exr
         const name = segments[segments.length - 1];
         job.outPath = path.join(opts.out, ...segments);
-        job.seq = { dir: job.outPath, name, ext: preset.ext, start: opts.startFrame ?? 1001, pad: 4 };
+        // files mode keeps a source sequence's own frame numbers
+        const start = opts.keepNumbers && clip.file.sequence ? clip.file.sequence.first : opts.startFrame ?? 1001;
+        job.seq = { dir: job.outPath, name, ext: preset.ext, start, pad: Math.max(4, String(start + range.frames - 1).length) };
         job.displayPath = path.join(job.outPath, `${name}.${'#'.repeat(job.seq.pad)}.${preset.ext}`);
       } else {
         job.outPath = path.join(opts.out, ...segments) + '.' + preset.ext;

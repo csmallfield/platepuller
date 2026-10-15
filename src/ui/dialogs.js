@@ -7,6 +7,11 @@ import path from 'node:path';
 const FILTERS = {
   xml: { win: 'Premiere XML (*.xml)|*.xml|All files (*.*)|*.*', mac: 'xml', title: 'Choose the edit XML' },
   lut: { win: '3D LUT (*.cube)|*.cube|All files (*.*)|*.*', mac: 'cube', title: 'Choose a LUT' },
+  media: {
+    win: 'Movies and images|*.mov;*.mp4;*.m4v;*.mxf;*.avi;*.mkv;*.webm;*.exr;*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.dpx|All files (*.*)|*.*',
+    mac: 'public.item',
+    title: 'Choose a movie or any frame of an image sequence',
+  },
   folder: { title: 'Choose the output folder' },
 };
 
@@ -71,7 +76,7 @@ export async function pick(kind, initial = '') {
         : `POSIX path of (choose file with prompt "${f.title}" of type {"${f.mac}"})`;
     return run('osascript', ['-e', script]);
   }
-  return run('zenity', ['--file-selection', `--title=${f.title}`, ...(kind === 'folder' ? ['--directory'] : [`--file-filter=*.${f.mac}`]), ...(start ? [`--filename=${start}`] : [])]);
+  return run('zenity', ['--file-selection', `--title=${f.title}`, ...(kind === 'folder' ? ['--directory'] : f.mac.includes('.') ? [] : [`--file-filter=*.${f.mac}`]), ...(start ? [`--filename=${start}`] : [])]);
 }
 
 /** Show a file or folder in the system file browser. */
