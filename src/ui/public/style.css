@@ -52,6 +52,8 @@ select { appearance: none; padding-right: 30px; background-image: linear-gradien
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.primary:disabled { opacity: .4; cursor: not-allowed; filter: none; }
 .btn.ghost { background: transparent; }
+.btn.small { padding: 4px 12px; font-size: 13px; font-weight: 400; }
+.panel h2.split { justify-content: space-between; }
 .btn.link { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; }
 .icon-btn { background: none; border: 1px solid transparent; color: var(--muted); border-radius: 6px; width: 28px; height: 28px; cursor: pointer; }
 .icon-btn:hover { color: var(--text); border-color: var(--line-2); }

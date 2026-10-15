@@ -154,6 +154,14 @@ const API = {
     run?.controller.abort();
     return { ok: true };
   },
+  async status() {
+    return { running: Boolean(run?.running) };
+  },
+  /** Forget a finished run, so reloads and new jobs start clean. */
+  async clear() {
+    if (run && !run.running) run.events = [];
+    return { ok: true };
+  },
   async reveal(body) {
     reveal(body.path);
     return { ok: true };

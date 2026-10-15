@@ -82,9 +82,11 @@ function bindForm() {
     input.value = state[key] ?? '';
     input.addEventListener('input', () => {
       state[key] = input.type === 'number' ? Number(input.value) : input.value;
+      if (key === 'xml') clearProgress(); // a different edit: the last run's list no longer applies
       changed();
     });
   }
+  $('clear-progress').addEventListener('click', clearProgress);
   $('includeDisabled').checked = Boolean(state.includeDisabled);
   $('includeDisabled').addEventListener('change', (e) => {
     state.includeDisabled = e.target.checked;
@@ -244,6 +246,20 @@ function setBusy(on) {
   if (!on) renderOutputs(); // restores per-card disabled states
   $('cancel').hidden = !on;
   $('publish').hidden = on;
+  $('clear-progress').hidden = on;
+}
+
+/** Dismiss a finished run: hide its progress and results, and let the server forget it. */
+function clearProgress() {
+  if (busy || $('sec-progress').hidden) return;
+  events?.close();
+  progress = new Map();
+  $('sec-progress').hidden = true;
+  $('progress').textContent = '';
+  $('results').textContent = '';
+  $('overall-text').textContent = '';
+  $('overall-bar').style.width = '0';
+  api('clear').catch(() => {});
 }
 
 // ---- planning -----------------------------------------------------------------------
@@ -469,7 +485,8 @@ async function init() {
   bindForm();
   renderOutputs();
   refreshPlan();
-  listen(); // shows a publish that is still running (or just finished) after a reload
+  // After a reload, reconnect only to a publish that is still running; finished runs stay gone.
+  if ((await api('status')).running) listen();
 }
 
 init().catch(showFatal);
