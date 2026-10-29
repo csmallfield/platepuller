@@ -293,3 +293,30 @@ test('files mode: flat names, or the source folder structure', () => {
   assert.equal(seq[0].seq.start, 1001);
   assert.equal(seq[0].colorSpace, 'ACESCG', '{colorSpace} falls back to the source space');
 });
+
+test('HDR PQ and 8-bit display sources convert to ACEScg', async () => {
+  const { spaceFromMovie } = await import('../src/sources.js');
+  const { colorResources } = await import('../src/publish.js');
+  assert.equal(spaceFromMovie({ colorTransfer: 'smpte2084', colorPrimaries: 'bt2020' }).space, 'pq_rec2020');
+  assert.equal(spaceFromMovie({ colorTransfer: 'bt709', colorPrimaries: 'bt709' }).space, 'rec709');
+
+  const job = (pixFmt) => ({
+    preset: BUILTIN_PRESETS.exr16, output: { alpha: false },
+    probe: { width: 1920, height: 1080, colorSpace: 'bt2020nc', pixFmt }, size: { width: 1920, height: 1080 },
+  });
+  const exr = { color: 'acescg', exposure: 0 };
+  // PQ: decoded by zscale (exact, unclamped), then Rec.2020 -> ACEScg
+  const pq = colorResources(exr, 'pq_rec2020');
+  assert.equal(pq.mode, 'linear');
+  assert.ok(imageFilters(job('yuv422p10le'), pq).some((f) => f.startsWith('zscale=transferin=smpte2084:transfer=linear:npl=100')));
+  // 8-bit Rec.709 video / sRGB: display curve undone with a 1D LUT, then Rec.709 -> ACEScg
+  for (const space of ['rec709', 'srgb']) {
+    const r = colorResources(exr, space);
+    assert.equal(r.mode, 'linear');
+    assert.ok(fs.existsSync(r.lut1d));
+    assert.ok(Math.abs(r.matrix[0][0] - 0.613097) < 1e-5, 'Rec.709 primaries to ACEScg');
+  }
+  // no longer refused: display-referred material may go to ACEScg
+  const { normalizeOutput } = await import('../src/publish.js');
+  assert.deepEqual(normalizeOutput({ preset: 'exr16', color: 'acescg' }, BUILTIN_PRESETS).errors, []);
+});

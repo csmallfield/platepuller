@@ -136,11 +136,16 @@ export const SOURCE_SPACES = {
   lin_rec2020: 'Linear Rec.2020 (scene-linear)',
   aces2065: 'ACES2065-1 (scene-linear)',
   applelog: 'Apple Log',
+  pq_rec2020: 'Rec.2100 PQ (BT.2020, SMPTE ST 2084 HDR)',
   rec709: 'Rec.709 video (display)',
   srgb: 'sRGB (display)',
 };
-export const SPACE_LABEL = { acescg: 'ACESCG', lin_rec709: 'LIN709', lin_rec2020: 'LIN2020', aces2065: 'ACES', applelog: 'LOG', rec709: 'REC709', srgb: 'SRGB' };
-export const SCENE_SPACES = new Set(['acescg', 'lin_rec709', 'lin_rec2020', 'aces2065', 'applelog']);
+export const SPACE_LABEL = {
+  acescg: 'ACESCG', lin_rec709: 'LIN709', lin_rec2020: 'LIN2020', aces2065: 'ACES', applelog: 'LOG', pq_rec2020: 'PQ2020', rec709: 'REC709', srgb: 'SRGB',
+};
+// Spaces that hold scene light (or, for PQ, absolute light) that the Rec.709 view tone-maps.
+// Rec.709 video and sRGB are display-referred: already "viewed".
+export const SCENE_SPACES = new Set(['acescg', 'lin_rec709', 'lin_rec2020', 'aces2065', 'applelog', 'pq_rec2020']);
 
 const PRIMARIES = {
   acescg: [0.713, 0.293, 0.165, 0.83, 0.128, 0.044],
@@ -174,6 +179,7 @@ export function spaceFromExr(attrs) {
 
 /** Colour space of a movie from its stream tags. */
 export function spaceFromMovie(probe) {
+  if (probe.colorTransfer === 'smpte2084') return { space: 'pq_rec2020', from: 'stream tags (SMPTE ST 2084 / PQ)' };
   if (probe.colorTransfer === 'bt709' || (probe.colorPrimaries === 'bt709' && probe.colorTransfer !== 'unknown')) return { space: 'rec709', from: 'stream tags (BT.709)' };
   if (probe.colorPrimaries === 'bt2020' && (!probe.colorTransfer || probe.colorTransfer === 'unknown') && probe.make === 'Apple') {
     return { space: 'applelog', from: 'Apple camera, Rec.2020 primaries, log transfer' };

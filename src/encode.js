@@ -110,9 +110,11 @@ export function imageFilters(job, color) {
       f.push(`lut3d=file='${filterPath(color.lut3d)}':interp=tetrahedral`, `lut1d=file='${filterPath(color.lut1d)}':interp=linear`);
       break;
     case 'linear': {
-      // to scene-linear ACEScg: [Apple Log -> linear 1D LUT], then a primaries matrix, in float
+      // to linear ACEScg: decode the source curve (Apple Log or display curve: 1D LUT; PQ:
+      // zscale, exact and unclamped), then a primaries matrix, all in float
       toRgb(f32);
       if (color.lut1d) f.push(`lut1d=file='${filterPath(color.lut1d)}':interp=linear`);
+      if (color.pq) f.push('zscale=transferin=smpte2084:transfer=linear:npl=100:primariesin=2020:primaries=2020', `format=${f32}`);
       const m = color.matrix;
       const mix = ['r', 'g', 'b'].flatMap((o, i) => ['r', 'g', 'b'].map((c, j) => `${o}${c}=${m[i][j].toFixed(8)}`)).join(':');
       f.push(`colorchannelmixer=${mix}`);

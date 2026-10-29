@@ -328,7 +328,7 @@ async function refreshPlan() {
   }
 }
 
-const SPACE_SHORT = { acescg: 'ACEScg', lin_rec709: 'Linear Rec.709', lin_rec2020: 'Linear Rec.2020', aces2065: 'ACES2065-1', applelog: 'Apple Log', rec709: 'Rec.709', srgb: 'sRGB' };
+const SPACE_SHORT = { acescg: 'ACEScg', lin_rec709: 'Linear Rec.709', lin_rec2020: 'Linear Rec.2020', aces2065: 'ACES2065-1', applelog: 'Apple Log', pq_rec2020: 'Rec.2100 PQ', rec709: 'Rec.709', srgb: 'sRGB' };
 
 function renderPlan() {
   const p = plan;

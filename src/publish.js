@@ -11,7 +11,7 @@ import { validateTemplate } from './template.js';
 import { writeBuiltinLut, writeLinearLut } from './applelog.js';
 import { conversionMatrix } from './colormath.js';
 import { OPENEXR_COMPRESSION, openexrStatus } from './openexr.js';
-import { bakeView, ocioStatus } from './colorview.js';
+import { bakeView, ocioStatus, writeDisplayLinearLut } from './colorview.js';
 import { SCENE_SPACES, SOURCE_SPACES, SPACE_LABEL, discover, sourcesToClips, spaceFromMovie } from './sources.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -123,9 +123,6 @@ export function jobColorLabel(output, inputSpace) {
 function colorProblem(output, space, clipName) {
   if (output.color === 'none' || output.color === 'lut' || output.forceSource) return null;
   if (!space) return `cannot tell what colour space ${clipName} is in: choose a Source colour space`;
-  if (output.color === 'acescg' && !SCENE_SPACES.has(space)) {
-    return `${clipName} is display-referred (${SOURCE_SPACES[space]}); ACEScg needs a scene-linear or log source`;
-  }
   if (output.color === 'rec709' && SCENE_SPACES.has(space) && !ocioStatus().available) return ocioStatus().reason;
   return null;
 }
@@ -339,9 +336,19 @@ export function colorResources(o, inputSpace) {
       return { mode: 'lut3d', lut3d: path.resolve(o.lut), display: 'rec709' };
     case 'rec709':
       if (!SCENE_SPACES.has(space)) return { mode: 'display', display: 'rec709' };
+      // PQ code values are already the view's shaper code (PQ with linear 1.0 = 100 nits), so a
+      // PQ source indexes the linear Rec.2020 view LUT directly.
+      if (space === 'pq_rec2020') return { mode: 'view', ...bakeView('lin_rec2020', o.exposure || 0), shaper: null, display: 'rec709' };
       return { mode: 'view', ...bakeView(space, o.exposure || 0), shaper: space === 'applelog' ? null : 'pq', display: 'rec709' };
     case 'acescg':
       if (space === 'applelog') return { mode: 'linear', lut1d: writeLinearLut(o.exposure), matrix: conversionMatrix('rec2020', 'acescg') };
+      // PQ: decode ST 2084 to linear light with 1.0 = 100 nits (the OCIO / ACES convention)
+      if (space === 'pq_rec2020') return { mode: 'linear', pq: true, matrix: scaleMatrix(conversionMatrix('rec2020', 'acescg'), gain) };
+      // display-referred (8-bit video, sRGB images): undo the display curve, no inverse tone
+      // mapping, so display white lands at 1.0 and nothing goes above it
+      if (space === 'rec709' || space === 'srgb') {
+        return { mode: 'linear', lut1d: writeDisplayLinearLut(space), matrix: scaleMatrix(conversionMatrix('rec709', 'acescg'), gain) };
+      }
       return { mode: 'linear', matrix: scaleMatrix(conversionMatrix(LINEAR_PRIMARIES[space], 'acescg'), gain) };
     default:
       return { mode: 'none' };

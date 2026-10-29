@@ -28,6 +28,31 @@ export function ocioStatus() {
   return status;
 }
 
+/**
+ * 1D LUT that decodes display-referred code values to linear light: Rec.709 video with the
+ * BT.1886 display curve (gamma 2.4), sRGB with the IEC 61966-2-1 curve. No inverse tone
+ * mapping: the result is the display's light, with 1.0 = display white.
+ */
+export function writeDisplayLinearLut(space) {
+  fs.mkdirSync(CACHE, { recursive: true });
+  const file = path.join(CACHE, `display_to_linear_${space}_v1.cube`);
+  if (fs.existsSync(file)) return file;
+  const n = 16384;
+  const decode =
+    space === 'srgb'
+      ? (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+      : (v) => v ** 2.4;
+  const lines = [`TITLE "${space} display code to linear light (platepuller)"`, `LUT_1D_SIZE ${n}`, 'DOMAIN_MIN 0 0 0', 'DOMAIN_MAX 1 1 1'];
+  for (let i = 0; i < n; i++) {
+    const y = decode(i / (n - 1)).toFixed(8);
+    lines.push(`${y} ${y} ${y}`);
+  }
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, lines.join('\n') + '\n');
+  fs.renameSync(tmp, file);
+  return file;
+}
+
 /** { lut3d, lut1d } for the view from `input` (acescg, lin_rec709, lin_rec2020, aces2065, applelog). */
 export function bakeView(input, stops = 0) {
   fs.mkdirSync(CACHE, { recursive: true });
