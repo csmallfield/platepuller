@@ -165,21 +165,31 @@ light, without clipping.
 
 Each source has a colour space: chosen with **Source colour space** (`--source-space`), or by
 default detected from the files: EXR headers (Arnold's `arnold/color_space`, OIIO-style attributes
-or the chromaticities) and camera tags for movies. iPhone Apple Log footage is recognised.
+or the chromaticities) and the colour tags of movies. iPhone Apple Log footage and HDR movies
+tagged BT.2020 / SMPTE ST 2084 (PQ) are recognised.
 
 - With no conversion, the image passes through untouched and keeps the source's colour tags.
 - `--convert rec709` (**Rec.709 — ACES 1.0 SDR-video**) is the ACES view Maya uses by default. It
   is baked from OpenColorIO's built-in ACES 1.3 config (`ACES 1.0 - SDR Video` on `Rec.1886
   Rec.709 - Display`), which gives identical results to Maya 2026's `ACES 1.0 SDR-video` on a
   Rec.1886 / Rec.709 display. It works from ACEScg, linear Rec.709 / sRGB, linear Rec.2020,
-  ACES2065-1 and Apple Log. Scene-linear values are shaped with PQ, then go through a 65³ 3D LUT
+  ACES2065-1, Apple Log and Rec.2100 PQ. Scene-linear values are shaped with PQ, then go through a 65³ 3D LUT
   to linear display light and a 1D LUT for the display encoding, so the clamp at the edge of the
   gamut and the steep gamma near black stay out of the 3D LUT. Compared with OCIO itself, 99.9% of
   pixels are within 1.5 of 255. `--exposure` adjusts it in stops. Display-referred sources
   (Rec.709 video, sRGB) are passed through as they are.
-- `--convert acescg` (EXR only) converts to scene-linear ACEScg: Apple Log is decoded with Apple's
-  published curve, and linear sources change primaries with a matrix (Bradford adaptation to the
-  ACES white). It uses no tone curve, so highlights above 1.0 are kept.
+- `--convert acescg` (EXR only) converts to linear ACEScg with a primaries matrix (Bradford
+  adaptation to the ACES white), after decoding the source's curve. It uses no tone curve, so
+  highlights above 1.0 are kept.
+  - **Apple Log** is decoded with Apple's published curve.
+  - **Rec.2100 PQ** (BT.2020, SMPTE ST 2084 HDR) is decoded to absolute light with **1.0 = 100
+    nits**, the OCIO / ACES convention, so a 1,000-nit highlight becomes 10.0. If you prefer
+    203-nit HDR reference white at 1.0, use `--exposure -1.02`.
+  - **8-bit and other display-referred material** (Rec.709 video, sRGB images) is decoded with its
+    display curve: gamma 2.4 (BT.1886) for Rec.709 video, the sRGB curve for images. There's no
+    inverse tone mapping, so display white lands at 1.0 and nothing goes above it. That gives no
+    extra range, but it puts the material into ACEScg for comp.
+  - Linear sources only change primaries.
 - `--lut file.cube` applies any 3D LUT. To match Apple's look, use the official
   *Apple Log to Rec.709* LUT from Apple's Log profile download.
 - `--convert applelog-rec709` is the earlier built-in look for Apple Log: Apple Log decode →
